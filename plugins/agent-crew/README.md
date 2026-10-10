@@ -47,8 +47,8 @@ Cost is an estimate from token counts and the `PRICES` table in `hooks/register.
 ## Install
 
 ```
-claude plugin marketplace add jduerrmann/claude-mods
-claude plugin install agent-crew@claude-mods
+claude plugin marketplace add jduerrmann/agent-crew
+claude plugin install agent-crew@agent-crew
 ```
 
 ## Credits

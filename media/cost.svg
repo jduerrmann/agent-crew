@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="182" viewBox="0 0 860 182"><style>
+text{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',sans-serif}
+.run .la{animation:st .5s steps(1) infinite}.run .lb{animation:st .5s steps(1) infinite -.25s}
+.run .bd{animation:bob .5s steps(1) infinite -.125s}.run g{transform-box:fill-box}
+@keyframes st{50%{transform:translateY(-1px)}}@keyframes bob{50%{transform:translateY(1px)}}
+.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite}@keyframes twist{50%{transform:rotate(-35deg)}}
+.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite}@keyframes fence{50%{transform:rotate(25deg)}}
+.c-light.run .la{animation-duration:.25s}.c-light.run .lb{animation-duration:.25s;animation-delay:-.125s}
+.c-light.run .flag{transform-origin:0 50%;animation:wave .25s steps(1) infinite}@keyframes wave{50%{transform:skewY(-12deg) scaleX(.85)}}
+.live{animation:p 1.6s ease-in-out infinite}@keyframes p{50%{opacity:.3}}
+.fresh{animation:fr 1s ease-in-out infinite}@keyframes fr{50%{opacity:.4}}
+.grow{animation:grow 3s ease-in-out infinite alternate}@keyframes grow{from{transform:scaleX(.55)}to{transform:scaleX(1)}}
+@media (prefers-reduced-motion: reduce){*{animation:none!important}}
+</style><rect width="860" height="182" rx="16" fill="#1b1b1a"/><rect x="18" y="16" width="824" height="150" rx="10" fill="none" stroke="#3a3a38" stroke-width="1.2"/><text x="32" y="38" font-size="12.5" fill="#a8a8a4" font-weight="600">Cost</text><circle cx="37" cy="62" r="4" fill="#D97757"/><text x="48" y="66" font-size="13" fill="#ececec" >Main chat</text><text x="732" y="66" font-size="12" fill="#a8a8a4" text-anchor="end">48k new · 2.1M cached</text><text x="828" y="66" font-size="13" fill="#ececec" text-anchor="end" font-weight="600">≈$2.31</text><circle cx="37" cy="86" r="4" fill="#378ADD"/><text x="48" y="90" font-size="13" fill="#ececec" >Subagents (6)</text><text x="732" y="90" font-size="12" fill="#a8a8a4" text-anchor="end">95k new · 2.9M cached</text><text x="828" y="90" font-size="13" fill="#ececec" text-anchor="end" font-weight="600">≈$4.18</text><rect x="32" y="104" width="283" height="7" rx="3.5" fill="#D97757"/><rect x="315" y="104" width="513" height="7" rx="3.5" fill="#378ADD"/><text x="32" y="136" font-size="12.5" fill="#a8a8a4" >Total</text><text x="732" y="136" font-size="12" fill="#a8a8a4" text-anchor="end">143k new · 5.0M cached</text><text x="828" y="136" font-size="16" fill="#ececec" text-anchor="end" font-weight="700">≈$6.49</text><text x="32" y="156" font-size="10.5" fill="#7d7d79" >Each request rereads the whole context, mostly cheaply from the cache. Cost is an estimate.</text></svg>

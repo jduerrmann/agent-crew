@@ -3,8 +3,8 @@
   "version": "0.3.0",
   "description": "One pane for every subagent (tabs, details, timeline), the files they read, changed and committed (history, diffs, conflicts), and the session's usage.",
   "author": { "name": "jduerrmann", "url": "https://github.com/jduerrmann" },
-  "homepage": "https://github.com/jduerrmann/claude-mods/tree/main/plugins/agent-crew",
-  "repository": "https://github.com/jduerrmann/claude-mods",
+  "homepage": "https://github.com/jduerrmann/agent-crew",
+  "repository": "https://github.com/jduerrmann/agent-crew",
   "types": "./types/index.d.ts",
   "userConfig": {
     "language": {

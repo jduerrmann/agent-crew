@@ -1,7 +1,7 @@
 {
-  "name": "claude-mods",
+  "name": "agent-crew",
   "owner": { "name": "jduerrmann", "url": "https://github.com/jduerrmann" },
-  "metadata": { "description": "Personal Claude Code mods." },
+  "metadata": { "description": "agent-crew: one Claude Code pane for every subagent, the files they touch, and the session's usage and cost." },
   "plugins": [
     {
       "name": "agent-crew",
