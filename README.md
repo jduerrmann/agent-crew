@@ -113,7 +113,9 @@ In the spirit of [filetree](https://github.com/data-goblin/claude-code-filetree)
 - ◉ **read** (purple): from `Read`, `Grep` hits and shell readers like `cat`, `sed`, `rg -l` or `Get-Content`.
 - ✎ **changed** (orange): with `+N −N` from git, `new` for files git does not track yet.
 - ✓ **committed** (green): with the short sha of the commit.
-- **Agent dots:** coloured dots show which agents touched a file. A freshly touched file pulses.
+- **Shimmer:** a file just read, changed or committed shimmers in that colour for a few seconds, a bright band sweeping across its name, as in filetree.
+- **Search:** the `/` line narrows the tree to the paths that hold what you type; Enter opens the first hit.
+- **Agent dots:** coloured dots show which agents touched a file.
 - **▸ opens a card** in the file's colour with its history (who read, changed or committed it, and when) and its diff against `HEAD`. A new file shows its text.
 - **Conflict:** two agents changing one file within ten minutes get a blinking ⚠, a red card and a notice.
 - **Changes only** hides the files that were only read. The header shows the branch, and ↑↓ against its upstream.
@@ -183,7 +185,7 @@ claude plugin test plugins/agent-crew
 ## Credits
 
 - **[johnnyvizz](https://github.com/johnnyvizz)**, for [savvy-progress](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress) and [savvy-flow](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-flow). The pixel crabs, their costumes and the agents panel in `hooks/crab.ts` follow their work.
-- **[Kurt Buhler](https://github.com/data-goblin)**, for [filetree](https://github.com/data-goblin/claude-code-filetree). The file activity idea, and the shell-command reading in `hooks/files.ts`, follow it.
+- **[Kurt Buhler](https://github.com/data-goblin)**, for [filetree](https://github.com/data-goblin/claude-code-filetree). The file activity idea, the shimmer, the search line, and the shell-command reading in `hooks/files.ts`, follow it.
 
 Both projects are MIT licensed. Their copyright notices are in [NOTICE](NOTICE), and the parts derived from them stay under MIT.
 

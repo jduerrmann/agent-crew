@@ -56,6 +56,8 @@ export type CrewPanel = {
   isFilesCollapsed: boolean
   /** The file whose history and diff are open. */
   openFile?: string
+  /** What the search line above the file tree holds. */
+  fileQuery?: string
   /** An agent whose files are lit while the rest dim. */
   focusAgent?: string
   isTimelineOpen: boolean

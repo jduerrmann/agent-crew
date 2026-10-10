@@ -8,7 +8,8 @@ https://github.com/johnnyvizz/claude-kit
 Copyright (c) 2026 johnnyvizz
 
 -------------------------------------------------------------------------------
-filetree (shell command splitting and reader detection, hooks/files.ts)
+filetree (shell command splitting and reader detection in hooks/files.ts;
+the shimmer tones and band in hooks/register.tsx)
 https://github.com/data-goblin/claude-code-filetree
 
 Copyright (c) 2026 Kurt Buhler

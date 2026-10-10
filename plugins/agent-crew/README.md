@@ -21,6 +21,7 @@ Drawn the way the savvy-progress agents panel is (pixel crabs, context bar, cost
 In the spirit of [filetree](https://github.com/data-goblin/claude-code-filetree): every file the main chat or a subagent read (purple), changed (orange, with `+N −N` from git) or that went into a commit during the session (green, with the short sha), plus files git reports as changed, as a folder tree. Coloured dots name the agents that touched each file.
 
 - Press a file to open its **history** (who read, changed or committed it, and when) and its **diff** against HEAD (an untracked file shows its text). The open diff follows later edits.
+- A file just touched **shimmers** in its colour, a bright band sweeping across its name, as in filetree. The `/` **search line** narrows the tree; Enter opens the first hit.
 - Two agents changing one file within ten minutes is a **conflict**: a ⚠ in the tree and a notice (`warnConflicts`).
 - **Changes only** hides files that were only read.
 

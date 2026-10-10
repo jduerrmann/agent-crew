@@ -271,3 +271,32 @@ test('settings write through /config and take effect at once', async ($, on) => 
   expect(await crew.find({ text: /Subagenten \(\d+\)/ })).toBeDefined()
   expect(await crew.find({ key: 'open-settings' })).toBeDefined()
 })
+
+test('the search line narrows the file tree, and Enter opens the first hit', async ($, on) => {
+  engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/utils.ts' } as never)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeDefined()
+    await ui.input({ key: 'file-q', text: 'util', kind: 'change' })
+    expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeUndefined()
+    expect(await ui.find({ key: 'file-/work/src/utils.ts' })).toBeDefined()
+    await ui.input({ key: 'file-q', text: 'util' })
+    expect(await ui.find({ text: /Verlauf/ })).toBeDefined()
+    await ui.press({ key: 'file-q-clear' })
+    expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeDefined()
+    await ui.press({ key: 'file-/work/src/utils.ts' })
+  }
+})
+
+test('a freshly touched file shimmers on the desktop', async ($, on) => {
+  engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'a', new_string: 'b' } as never)
+  const ui = await mount($, 'desktop')
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('linearGradient')
+  expect(drawn).toContain('animateTransform')
+})

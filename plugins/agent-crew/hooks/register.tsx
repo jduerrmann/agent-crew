@@ -48,7 +48,7 @@ const MAX_RUNS = 300
 const MAX_FILES = 400
 const MAX_LOG = 40
 const MAX_TEXT = 4000
-const FRESH_MS = 6000
+const FRESH_MS = 8000
 
 const READ_COLOR = '#a855f7'
 const WRITE_COLOR = '#f97316'
@@ -102,6 +102,10 @@ const STRINGS = {
     more: (n: number) => `… ${n} weitere`,
     main: 'Hauptchat',
     totalsTitle: 'Kosten',
+    search: 'Dateien suchen',
+    searchOpen: 'öffnen',
+    hits: (n: number) => `${n} Treffer`,
+    noHits: 'Keine Datei passt zur Suche.',
     fresh: 'neu',
     cached: 'aus Cache',
     costNote: 'Tokens: neu = Eingabe, Ausgabe, Cache-Schreiben. Jede Anfrage liest den ganzen Kontext erneut, meist günstig aus dem Cache. Kosten sind geschätzt.',
@@ -172,6 +176,10 @@ const STRINGS = {
     more: (n: number) => `… ${n} more`,
     main: 'main chat',
     totalsTitle: 'Cost',
+    search: 'Search files',
+    searchOpen: 'open',
+    hits: (n: number) => `${n} ${n === 1 ? 'hit' : 'hits'}`,
+    noHits: 'No file matches the search.',
     fresh: 'new',
     cached: 'cached',
     costNote: 'Tokens: new = input, output, cache writes. Each request rereads the whole context, mostly cheaply from the cache. Cost is an estimate.',
@@ -1109,8 +1117,33 @@ const FILE_ROW_H = 20
 const dirRowSvg = (W: number, name: string, depth: number): string =>
   svg(W, FILE_ROW_H, `<text class="s" x="${depth * 14}" y="14" font-family="${FONT}" font-size="12">▾ ${xml(fitText(name + '/', 12, W - depth * 14 - 20))}</text>`, false)
 
+// The shimmer's tones, after filetree's (Kurt Buhler, MIT): the base colour, then
+// three steps lighter for the band's edge, shoulder and crest.
+const SHIMMER: Record<CrewFile['lastKind'], readonly [string, string, string, string]> = {
+  read: ['#a855f7', '#c084fc', '#d8b4fe', '#f3e8ff'],
+  write: ['#f97316', '#fb923c', '#fdba74', '#ffedd5'],
+  commit: ['#22c55e', '#4ade80', '#86efac', '#dcfce7'],
+}
+
+/** A gradient whose bright band sweeps from `from` to `to`, again and again. */
+const shimmerOf = (id: string, kind: CrewFile['lastKind'], from: number, to: number): string => {
+  const [base, edge, shoulder, crest] = SHIMMER[kind]
+  const band = 44
+  const start = from - band - 8
+  const end = to + 8
+  // About 18 characters a second, as filetree's band moves.
+  const dur = Math.max(0.7, (end - start) / 125).toFixed(2)
+  return (
+    `<defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${band}" y2="0">` +
+    `<stop offset="0" stop-color="${base}"/><stop offset=".28" stop-color="${edge}"/><stop offset=".42" stop-color="${shoulder}"/>` +
+    `<stop offset=".5" stop-color="${crest}"/><stop offset=".58" stop-color="${shoulder}"/><stop offset=".72" stop-color="${edge}"/><stop offset="1" stop-color="${base}"/>` +
+    `<animateTransform attributeName="gradientTransform" type="translate" from="${start} 0" to="${end} 0" dur="${dur}s" repeatCount="indefinite"/>` +
+    `</linearGradient></defs>`
+  )
+}
+
 // One file: its glyph and name in the colour of what last happened to it (a fresh
-// one pulses), the dots of the agents that touched it, its git badge at the right.
+// one shimmers), the dots of the agents that touched it, its git badge at the right.
 const fileRowSvg = (
   W: number,
   name: string,
@@ -1131,14 +1164,20 @@ const fileRowSvg = (
   const dots = agents
     .map((a, j) => `<circle cx="${W - warnW - badgeW - dotsW + j * 9 + 4}" cy="${y - 4}" r="3.2" fill="${agentColor(a, byAgent)}"/>`)
     .join('')
-  const fresh = flags.isFresh ? ' class="fresh"' : ''
+  const shown = fitText(name, 12, nameW)
+  // A fresh file shimmers as filetree's do: a bright band sweeps across its glyph
+  // and name, in the tone of what just happened to it.
+  const shimmerId = `sh${hash(v.key)}`
+  const shimmer = flags.isFresh ? shimmerOf(shimmerId, v.file?.lastKind ?? 'read', x, x + 16 + textWidth(shown, 12)) : ''
+  const paint = flags.isFresh ? `url(#${shimmerId})` : color
   return svg(
     W,
     FILE_ROW_H,
-    `<g opacity="${flags.isDim ? 0.35 : 1}">` +
+    shimmer +
+      `<g opacity="${flags.isDim ? 0.35 : 1}">` +
       (flags.isOpen ? `<rect class="k" x="${Math.max(0, x - 4)}" y="1" width="${W - Math.max(0, x - 4)}" height="${FILE_ROW_H - 2}" rx="5"/>` : '') +
-      `<text x="${x}" y="${y}" font-family="${FONT}" font-size="12" fill="${color}"${fresh}>${fileGlyph(v)}</text>` +
-      `<text class="t" x="${x + 16}" y="${y}" font-family="${FONT}" font-size="12"${flags.isFresh ? ` fill="${color}" font-weight="600"` : flags.isOpen ? ' font-weight="600"' : ''}>${xml(fitText(name, 12, nameW))}</text>` +
+      `<text x="${x}" y="${y}" font-family="${FONT}" font-size="12" fill="${paint}">${fileGlyph(v)}</text>` +
+      `<text${flags.isFresh ? '' : ' class="t"'} x="${x + 16}" y="${y}" font-family="${FONT}" font-size="12"${flags.isFresh ? ` fill="${paint}" font-weight="600"` : flags.isOpen ? ' font-weight="600"' : ''}>${xml(shown)}</text>` +
       dots +
       (badge
         ? `<text x="${W - warnW}" y="${y}" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums" fill="${v.gitFile ? WRITE_COLOR : COMMIT_COLOR}">${xml(badge)}</text>`
@@ -1825,7 +1864,10 @@ export const register: Register = (on, options) => {
     }
 
     // --- the files section.
-    const views = fileViews(fileList, g, base, p.fileFilter)
+    // The search line narrows the tree to the paths that hold what was typed.
+    const query = (p.fileQuery ?? '').trim().toLowerCase()
+    const allViews = fileViews(fileList, g, base, p.fileFilter)
+    const views = query ? allViews.filter(v => v.label.toLowerCase().includes(query)) : allViews
     const branch = g ? `⑂ ${g.branch || 'HEAD'}${g.ahead ? ` ↑${g.ahead}` : ''}${g.behind ? ` ↓${g.behind}` : ''}` : ''
     const focusRun = p.focusAgent ? byAgent.get(p.focusAgent) : undefined
     const filesHeader = (
@@ -1850,6 +1892,35 @@ export const register: Register = (on, options) => {
         )}
       </Box>
     )
+
+    // As filetree's: `/` and a field; Enter opens the first hit's history and diff.
+    const SearchInput = 'Input' in ui ? ui.Input : undefined
+    const openFirstHit = async (text: string) => {
+      const q = text.trim().toLowerCase()
+      if (!q) return
+      const hit = treeRows(allViews.filter(v => v.label.toLowerCase().includes(q)).map(v => ({ key: v.key, label: v.label }))).find(r => !r.isDir)
+      if (!hit) return
+      await setPanel($, () => ({ openFile: hit.key, fileQuery: text }))
+      await loadDiff($, hit.key)
+    }
+    const searchRow =
+      SearchInput && !p.isFilesCollapsed && allViews.length > 0 ? (
+        <Box key="files-search" flexDirection="row" alignItems="center" gap={1}>
+          <Box flexGrow={1}>
+            <SearchInput
+              key="file-q"
+              label="/ "
+              placeholder={s.search}
+              submitLabel={s.searchOpen}
+              value={p.fileQuery ?? ''}
+              onInput={(text: string) => void setPanel($, () => ({ fileQuery: text }))}
+              onSubmit={(text: string) => void openFirstHit(text)}
+            />
+          </Box>
+          {query ? <Text dimColor>{s.hits(views.length)}</Text> : null}
+          {query ? <Button key="file-q-clear" label="×" plain onPress={() => setPanel($, () => ({ fileQuery: '' }))} /> : null}
+        </Box>
+      ) : null
 
     // About 8 CSS px a column on the desktop, less the frame's border and padding.
     const desktopW = Math.max(220, Math.min(900, ((e.props.bodyColumns || 40) - FRAME_COLS) * 8 - 8))
@@ -1981,7 +2052,7 @@ export const register: Register = (on, options) => {
     }
     const filesBody = (
       <Box key="files-body" flexDirection="column">
-        {!p.isFilesCollapsed && views.length === 0 && <Text dimColor>{s.noFiles}</Text>}
+        {!p.isFilesCollapsed && views.length === 0 && <Text dimColor>{query ? s.noHits : s.noFiles}</Text>}
         {!p.isFilesCollapsed && fileTree.slice(0, MAX_FILE_ROWS).map(fileRow)}
         {!p.isFilesCollapsed && fileTree.length > MAX_FILE_ROWS && <Text dimColor>{s.more(fileTree.length - MAX_FILE_ROWS)}</Text>}
         {!p.isFilesCollapsed && views.length > 0 && <Text dimColor>{s.legend}</Text>}
@@ -2091,6 +2162,7 @@ export const register: Register = (on, options) => {
           )}
           <Box key="sec-files" {...FRAME}>
             {filesHeader}
+            {searchRow}
             {filesBody}
           </Box>
         </Box>
@@ -2305,6 +2377,7 @@ export const register: Register = (on, options) => {
         )}
         <Box key="sec-files" {...FRAME}>
           {filesHeader}
+          {searchRow}
           {filesBody}
         </Box>
       </Box>
