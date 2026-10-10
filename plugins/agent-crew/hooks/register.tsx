@@ -32,6 +32,8 @@ const now = atom({ plugin: 'agent-crew', key: 'now' } as const, 0)
 const usage = atom({ plugin: 'agent-crew', key: 'usage' } as const, { context: { percent: null, window: 0 }, limits: [] })
 const diff = atom({ plugin: 'agent-crew', key: 'diff' } as const, null)
 const warned = atom({ plugin: 'agent-crew', key: 'warned' } as const, {})
+const settingsRev = atom({ plugin: 'agent-crew', key: 'settingsRev' } as const, 0)
+const mainCost = atom({ plugin: 'agent-crew', key: 'mainCost' } as const, { cost: 0, tokens: 0 })
 
 // The plugin's options, set by register on every (re)load.
 let opts: Record<string, unknown> = {}
@@ -99,6 +101,12 @@ const STRINGS = {
     legend: '◉ gelesen   ✎ geändert   ✓ committet',
     more: (n: number) => `… ${n} weitere`,
     main: 'Hauptchat',
+    totalsTitle: 'Kosten',
+    fresh: 'neu',
+    cached: 'aus Cache',
+    costNote: 'Tokens: neu = Eingabe, Ausgabe, Cache-Schreiben. Jede Anfrage liest den ganzen Kontext erneut, meist günstig aus dem Cache. Kosten sind geschätzt.',
+    total: 'Gesamt',
+    subagents: (n: number) => `Subagenten (${n})`,
     usage: 'Nutzung',
     context: 'Kontext',
     fiveHour: '5 Std.',
@@ -163,6 +171,12 @@ const STRINGS = {
     legend: '◉ read   ✎ changed   ✓ committed',
     more: (n: number) => `… ${n} more`,
     main: 'main chat',
+    totalsTitle: 'Cost',
+    fresh: 'new',
+    cached: 'cached',
+    costNote: 'Tokens: new = input, output, cache writes. Each request rereads the whole context, mostly cheaply from the cache. Cost is an estimate.',
+    total: 'Total',
+    subagents: (n: number) => `Subagents (${n})`,
     usage: 'Usage',
     context: 'context',
     fiveHour: '5h',
@@ -260,8 +274,14 @@ const costOf = (model: string, u: Usage): number => {
   )
 }
 
+/** Everything a request carried: the context window's fill after it. */
 const sumOf = (u: Usage): number =>
   (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0)
+
+// Each request resends the whole context, mostly read from the cache. Counted
+// apart: what was new (input, output, cache writes), and what the cache served.
+const freshOf = (u: Usage): number => (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_creation_input_tokens || 0)
+const cacheOf = (u: Usage): number => u.cache_read_input_tokens || 0
 
 const windowOf = (model: string): number => (/haiku/i.test(model) ? 200_000 : 1_000_000)
 
@@ -304,12 +324,13 @@ const elapsed = (r: CrewRun, at: number): number => (r.endedAt ?? Math.max(at, r
 const ctxOf = (r: CrewRun): number =>
   r.contextMax ? Math.min(100, Math.round((r.contextTokens / r.contextMax) * 100)) : 0
 
-const totals = (list: CrewRun[], at: number, gone: { cost: number; tokens: number }) => {
+const totals = (list: CrewRun[], at: number, gone: { cost: number; tokens: number; cache?: number }) => {
   const cost = list.reduce((s, r) => s + r.costUsd, gone.cost)
   const tokens = list.reduce((s, r) => s + r.tokens, gone.tokens)
+  const cache = list.reduce((s, r) => s + (r.cacheTokens ?? 0), gone.cache ?? 0)
   const start = Math.min(...list.map(r => r.startedAt))
   const end = Math.max(...list.map(r => r.endedAt ?? Math.max(at, r.startedAt)))
-  return { cost, tokens, time: list.length ? end - start : 0 }
+  return { cost, tokens, cache, time: list.length ? end - start : 0 }
 }
 
 // Over the cap, the oldest finished runs go first; an active one never does.
@@ -771,17 +792,34 @@ const statusMark = (x: number, y: number, status: CrewStatus, color: string): st
   return `<path d="M${x - 4} ${y - 4}l8 8M${x + 4} ${y - 4}l-8 8" stroke="#D0453F" stroke-width="1.8" stroke-linecap="round"/>`
 }
 
-const HEADER_H = 44
+// The cost section: the main chat and the subagents on rows of their own, a bar
+// splitting the total between them, and the total underneath.
+const COST_H = 92
+const SUB_COLOR = '#378ADD'
 
-const headerSvg = (W: number, t: ReturnType<typeof totals>): string => {
+type CostPart = { cost: number; tokens: number; cache: number }
+
+const costSvg = (W: number, main: CostPart, subs: CostPart, agents: number): string => {
   const s = tr()
-  const gap = 6
-  const tw = (W - gap * 2) / 3
-  const tile = (i: number, k: string, v: string) =>
-    `<rect class="tile" x="${i * (tw + gap)}" y="0" width="${tw}" height="40" rx="8"/>
-<text class="s" x="${i * (tw + gap) + 9}" y="16" font-family="${FONT}" font-size="11">${k}</text>
-<text class="t" x="${i * (tw + gap) + 9}" y="33" font-family="${FONT}" font-size="15" font-weight="600" font-variant-numeric="tabular-nums">${v}</text>`
-  return svg(W, HEADER_H, `${tile(0, s.cost, '≈' + fmtCost(t.cost))}${tile(1, s.tokens, fmtTokens(t.tokens))}${tile(2, s.time, fmtTime(t.time))}`, false)
+  const tokenText = (fresh: number, cache: number) => xml(`${fmtTokens(fresh)} ${s.fresh} · ${fmtTokens(cache)} ${s.cached}`)
+  const total = main.cost + subs.cost
+  const costX = W - 96
+  const row = (y: number, color: string, label: string, p: CostPart) =>
+    `<circle cx="5" cy="${y - 4}" r="4" fill="${color}"/>` +
+    `<text class="t" x="16" y="${y}" font-family="${FONT}" font-size="12.5">${xml(label)}</text>` +
+    `<text class="s" x="${costX}" y="${y}" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${tokenText(p.tokens, p.cache)}</text>` +
+    `<text class="t" x="${W}" y="${y}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-weight="600" font-variant-numeric="tabular-nums">≈${fmtCost(p.cost)}</text>`
+  const mainW = total > 0 ? Math.max(main.cost > 0 ? 3 : 0, Math.round((W * main.cost) / total)) : 0
+  const bar =
+    `<rect class="k" x="0" y="50" width="${W}" height="6" rx="3"/>` +
+    (total > 0
+      ? `<rect x="0" y="50" width="${mainW}" height="6" rx="3" fill="${CLAY}"/><rect x="${mainW}" y="50" width="${W - mainW}" height="6" rx="3" fill="${SUB_COLOR}"/>`
+      : '')
+  const sum =
+    `<text class="s" x="0" y="80" font-family="${FONT}" font-size="12">${xml(s.total)}</text>` +
+    `<text class="s" x="${costX}" y="80" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${tokenText(main.tokens + subs.tokens, main.cache + subs.cache)}</text>` +
+    `<text class="t" x="${W}" y="80" text-anchor="end" font-family="${FONT}" font-size="15" font-weight="700" font-variant-numeric="tabular-nums">≈${fmtCost(total)}</text>`
+  return svg(W, COST_H, row(14, CLAY, s.main, main) + row(36, SUB_COLOR, s.subagents(agents), subs) + bar + sum, false)
 }
 
 const ROW_H = 76
@@ -1152,16 +1190,125 @@ async function warnLimits($: EngineInterface): Promise<void> {
   for (const text of say) await notify($, text)
 }
 
+// ---------------------------------------------------------------------------
+// Settings: the plugin's own `/config` rows in a pane of their own. Values are
+// written with `$.config.set`, so the pane and `/config` always agree.
+
+const PLUGIN = 'agent-crew'
+const SETTINGS = 'agent-crew-settings'
+
+type Field = { key: string; group: 'view' | 'notify'; default: boolean | string; choices?: readonly string[] }
+
+const FIELDS: readonly Field[] = [
+  { key: 'showUsage', group: 'view', default: true },
+  { key: 'showTimeline', group: 'view', default: true },
+  { key: 'showTotals', group: 'view', default: false },
+  { key: 'autoOpen', group: 'view', default: true },
+  { key: 'language', group: 'view', default: 'auto', choices: ['auto', 'de', 'en'] },
+  { key: 'notifyAgents', group: 'notify', default: 'background', choices: ['off', 'failures', 'background', 'all'] },
+  { key: 'notifyVia', group: 'notify', default: 'toast', choices: ['toast', 'system'] },
+  { key: 'limitWarnings', group: 'notify', default: true },
+  { key: 'warnConflicts', group: 'notify', default: true },
+]
+
+const FIELD_TEXT = {
+  de: {
+    title: 'Crew · Einstellungen',
+    view: 'Anzeige',
+    notify: 'Benachrichtigungen',
+    on: 'An',
+    off: 'Aus',
+    locked: 'Vom Administrator festgelegt',
+    footer: 'Dieselben Werte wie in /config. Änderungen gelten sofort.',
+    opened: 'Crew-Einstellungen geöffnet.',
+    open: 'Einstellungen',
+    fields: {
+      showUsage: ['Nutzung', 'Kontext, 5-Stunden- und Wochenlimit oben im Panel'],
+      showTimeline: ['Zeitleiste', 'Wann welcher Agent lief, auf einer gemeinsamen Achse'],
+      showTotals: ['Kosten', 'Hauptchat und Subagenten getrennt, mit Tokens und Gesamtsumme'],
+      autoOpen: ['Automatisch öffnen', 'Das Panel öffnet sich beim ersten Subagenten einer Session'],
+      language: ['Sprache', 'Automatisch folgt der Sprache von Claude Code, dann dem System'],
+      notifyAgents: ['Agent fertig', 'Wann eine Meldung kommt, wenn ein Subagent endet'],
+      notifyVia: ['Meldungen als', 'In Claude Code oder als Benachrichtigung von Terminal bzw. System'],
+      limitWarnings: ['Limit-Warnungen', 'Bei 80 % und 95 % eines Limits, und bei 85 % Kontext'],
+      warnConflicts: ['Konflikt-Warnung', 'Wenn zwei Agenten innerhalb von 10 Minuten dieselbe Datei ändern'],
+    } as Record<string, [string, string]>,
+    choices: {
+      auto: 'Automatisch', de: 'Deutsch', en: 'English',
+      off: 'Aus', failures: 'Nur Fehler', background: 'Hintergrund', all: 'Alle',
+      toast: 'In Claude Code', system: 'System',
+    } as Record<string, string>,
+  },
+  en: {
+    title: 'Crew · Settings',
+    view: 'Display',
+    notify: 'Notifications',
+    on: 'On',
+    off: 'Off',
+    locked: 'Set by your administrator',
+    footer: 'The same values as /config. Changes apply at once.',
+    opened: 'Crew settings opened.',
+    open: 'Settings',
+    fields: {
+      showUsage: ['Usage', 'Context, 5-hour and weekly limit at the top of the panel'],
+      showTimeline: ['Timeline', 'When each agent ran, on one shared axis'],
+      showTotals: ['Cost', 'Main chat and subagents apart, with tokens and a total'],
+      autoOpen: ['Open automatically', 'The panel opens on the first subagent of a session'],
+      language: ['Language', 'Automatic follows Claude Code’s language, then the system'],
+      notifyAgents: ['Agent finished', 'When a notice comes as a subagent ends'],
+      notifyVia: ['Notices as', 'Inside Claude Code, or as the terminal’s or system’s notification'],
+      limitWarnings: ['Limit warnings', 'At 80 % and 95 % of a limit, and at 85 % context'],
+      warnConflicts: ['Conflict warning', 'When two agents change the same file within 10 minutes'],
+    } as Record<string, [string, string]>,
+    choices: {
+      auto: 'Automatic', de: 'Deutsch', en: 'English',
+      off: 'Off', failures: 'Failures only', background: 'Background', all: 'All',
+      toast: 'In Claude Code', system: 'System',
+    } as Record<string, string>,
+  },
+} as const
+
+const ft = () => FIELD_TEXT[lang]
+
+async function openSettings($: EngineInterface): Promise<void> {
+  await $.ui.open({ id: SETTINGS, title: ft().title })
+}
+
+// Writes one option the way /config would, then takes it at once.
+async function setOption($: EngineInterface, key: string, value: boolean | string): Promise<void> {
+  try {
+    const r = await $.config.set({ key: `${PLUGIN}.${key}`, value })
+    if (r.deny !== undefined) {
+      $.ui.toast(r.deny)
+      return
+    }
+  } catch (err) {
+    $.ui.toast(err instanceof Error ? err.message : String(err))
+    return
+  }
+  opts = { ...opts, [key]: value }
+  if (key === 'language') {
+    lang = await detectLang($, value)
+    void $.ui.open({ id: SETTINGS, title: ft().title }).catch(() => undefined)
+    if ((await $.ui.panes()).some(p => p.id === PANE)) void $.ui.open({ id: PANE, title: tr().pane }).catch(() => undefined)
+  }
+  await update($, settingsRev, n => (n ?? 0) + 1)
+}
+
 export const register: Register = (on, options) => {
   opts = options
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    lang = await detectLang($, options.language)
+    lang = await detectLang($, opts.language)
     fold = (await $.env.get('OS')) === 'Windows_NT'
     home = posix(((await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '').replace(/[\\/]+$/, ''))
     await $.command.register({
       name: 'crew',
       description: 'Show or hide the crew panel: every subagent of this session, and the files read, changed and committed',
+    })
+    await $.command.register({
+      name: 'crew-settings',
+      description: 'Open the crew panel settings: usage, timeline, totals, notifications, language',
     })
 
     // Each second: clocks of running rows and the fade of fresh files. Every few
@@ -1198,6 +1345,95 @@ export const register: Register = (on, options) => {
     return { text: isOpen ? tr().opened : tr().closed }
   })
 
+  on('command.run', { command: 'crew-settings' }, async $ => {
+    await openSettings($)
+    return { text: ft().opened }
+  })
+
+  // The settings pane: one framed group for display, one for notifications.
+  on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    await read($, settingsRev)
+    const f = ft()
+    let rows: Awaited<ReturnType<EngineInterface['config']['list']>> = []
+    try {
+      rows = await $.config.list()
+    } catch {
+      // No rows (an older host): the values the module holds stand.
+    }
+    const rowOf = (field: Field) => rows.find(r => r.key === `${PLUGIN}.${field.key}`)
+    const valueOf = (field: Field): boolean | string => {
+      const v = rowOf(field)?.value ?? opts[field.key]
+      return typeof v === 'boolean' || typeof v === 'string' ? v : field.default
+    }
+
+    const control = (field: Field) => {
+      const value = valueOf(field)
+      if (rowOf(field)?.isLocked) return <Text dimColor>🔒 {f.locked}</Text>
+      if (!field.choices) {
+        const isOn = value === true
+        return (
+          <Button
+            key={`set-${field.key}`}
+            label={isOn ? `● ${f.on}` : `○ ${f.off}`}
+            variant={isOn ? 'primary' : 'secondary'}
+            onPress={() => setOption($, field.key, !isOn)}
+          />
+        )
+      }
+      return (
+        <Box flexDirection="row" gap={1} flexWrap="wrap">
+          {field.choices.map(c => (
+            <Button
+              key={`set-${field.key}-${c}`}
+              label={`${value === c ? '✓ ' : ''}${f.choices[c] ?? c}`}
+              variant={value === c ? 'primary' : 'secondary'}
+              onPress={() => (value === c ? undefined : setOption($, field.key, c))}
+            />
+          ))}
+        </Box>
+      )
+    }
+
+    const fieldRow = (field: Field) => {
+      const [label, help] = f.fields[field.key] ?? [field.key, '']
+      return field.choices ? (
+        <Box key={`field-${field.key}`} flexDirection="column" marginBottom={1}>
+          <Text bold>{label}</Text>
+          <Text dimColor>{help}</Text>
+          {control(field)}
+        </Box>
+      ) : (
+        <Box key={`field-${field.key}`} flexDirection="row" justifyContent="space-between" alignItems="center" marginBottom={1}>
+          <Box flexDirection="column" flexShrink={1}>
+            <Text bold>{label}</Text>
+            <Text dimColor>{help}</Text>
+          </Box>
+          {control(field)}
+        </Box>
+      )
+    }
+
+    const group = (id: 'view' | 'notify') => (
+      <Box key={`group-${id}`} {...FRAME}>
+        <Box marginBottom={1}>
+          <Text bold dimColor>
+            {id === 'view' ? f.view : f.notify}
+          </Text>
+        </Box>
+        {FIELDS.filter(x => x.group === id).map(fieldRow)}
+      </Box>
+    )
+
+    return (
+      <Box flexDirection="column" gap={1}>
+        {group('view')}
+        {group('notify')}
+        <Text dimColor>{f.footer}</Text>
+      </Box>
+    )
+  })
+
   // Every start: the Agent tool, forks, teammates, workflow agents, nested ones.
   on('agent.spawn', async ($, e, next) => {
     const started = await next(e)
@@ -1231,7 +1467,7 @@ export const register: Register = (on, options) => {
 
     const p = await readPanel($)
     if (p.tab !== 'active') await setPanel($, () => ({ tab: 'active' }))
-    if (options.autoOpen !== false && !p.hasAutoOpened) {
+    if (opts.autoOpen !== false && !p.hasAutoOpened) {
       await setPanel($, () => ({ hasAutoOpened: true }))
       void $.ui.open({ id: PANE, title: tr().pane })
     }
@@ -1253,7 +1489,18 @@ export const register: Register = (on, options) => {
     const result = yield* next(e)
     const agentId = e.agentId
     const usage = result.usage
-    if (!agentId) return result
+    // The main chat's own requests: counted for the cost section.
+    if (!agentId) {
+      if (usage) {
+        const model = usage.model || e.model
+        await update($, mainCost, m => ({
+          cost: (m?.cost ?? 0) + costOf(model, usage),
+          tokens: (m?.tokens ?? 0) + freshOf(usage),
+          cache: (m?.cache ?? 0) + cacheOf(usage),
+        }))
+      }
+      return result
+    }
 
     // Not spawned through agent.spawn while the mod listened: the list may know it.
     if (!(await read($, runs)).some(r => r.agentId === agentId)) await reconcile($)
@@ -1279,7 +1526,8 @@ export const register: Register = (on, options) => {
                 endedAt: undefined,
                 contextTokens: sumOf(usage),
                 contextMax: windowOf(model),
-                tokens: r.tokens + sumOf(usage),
+                tokens: r.tokens + freshOf(usage),
+                cacheTokens: (r.cacheTokens ?? 0) + cacheOf(usage),
                 costUsd: r.costUsd + costOf(model, usage),
                 steps: r.steps + 1,
               },
@@ -1307,7 +1555,12 @@ export const register: Register = (on, options) => {
             endedAt: at,
             lastAnswer: e.answer ? e.answer.slice(0, MAX_TEXT) : r.lastAnswer,
             ...(fallback && e.usage
-              ? { model: e.usage.model || r.model, tokens: sumOf(e.usage), costUsd: costOf(e.usage.model || r.model, e.usage) }
+              ? {
+                  model: e.usage.model || r.model,
+                  tokens: freshOf(e.usage),
+                  cacheTokens: cacheOf(e.usage),
+                  costUsd: costOf(e.usage.model || r.model, e.usage),
+                }
               : {}),
           }
         }),
@@ -1355,10 +1608,22 @@ export const register: Register = (on, options) => {
     const doneCount = list.length - activeCount
     const shown = ordered(tabRuns(list, p.tab))
     const t = totals(list, at, gone)
+    // Cost: the main chat's own requests and the subagents', apart.
+    const mainRaw = await read($, mainCost)
+    const main = { cost: mainRaw.cost, tokens: mainRaw.tokens, cache: mainRaw.cache ?? 0 }
+    const subs = { cost: t.cost, tokens: t.tokens, cache: t.cache }
+    const mainShare = main.cost + subs.cost > 0 ? main.cost / (main.cost + subs.cost) : 0
     // The session totals (cost, tokens, time) are opt-in; each agent keeps its own.
-    const showTotals = options.showTotals === true
-    const showUsage = options.showUsage !== false
+    const showTotals = opts.showTotals === true
+    const showUsage = opts.showUsage !== false
+    // Drawn again when a setting changes in the settings pane.
+    await read($, settingsRev)
     const meters = metersOf(await read($, usage))
+    const settingsRow = (
+      <Box key="settings-row" flexDirection="row" justifyContent="flex-end">
+        <Button key="open-settings" label={`⚙ ${ft().open}`} plain onPress={() => openSettings($)} />
+      </Box>
+    )
     const compactButton = (
       <Button
         key="run-compact"
@@ -1449,6 +1714,7 @@ export const register: Register = (on, options) => {
               await update($, cleared, c => ({
                 cost: c.cost + gone.reduce((sum, r) => sum + r.costUsd, 0),
                 tokens: c.tokens + gone.reduce((sum, r) => sum + r.tokens, 0),
+                cache: (c.cache ?? 0) + gone.reduce((sum, r) => sum + (r.cacheTokens ?? 0), 0),
               }))
               await update($, runs, l => l.filter(isActive))
             }}
@@ -1768,7 +2034,7 @@ export const register: Register = (on, options) => {
       const timeline = showTimeline && p.isTimelineOpen ? timelineSvg(W, list, at) : null
 
       // Compact folds the agents' frame alone: a row of crabs each for active and finished.
-      const compact = compactSvg(W, list.filter(isActive), list.filter(r => !isActive(r)), showTotals ? t : null)
+      const compact = compactSvg(W, list.filter(isActive), list.filter(r => !isActive(r)), null)
       const agentsCompact = (
         <Box key="sec-agents" {...FRAME}>
           <Box flexDirection="row" justifyContent="flex-end" alignItems="center">
@@ -1779,6 +2045,7 @@ export const register: Register = (on, options) => {
       )
       return (
         <Box flexDirection="column" gap={1}>
+          {settingsRow}
           {showUsage && meters.length > 0 && (
             <Box key="sec-usage" {...FRAME}>
               <Box flexDirection="row" justifyContent="space-between" alignItems="center">
@@ -1790,6 +2057,19 @@ export const register: Register = (on, options) => {
               <Svg source={usageSvg(W, meters, at)} alt={meters.map(m => `${m.percent}% ${m.label}`).join(', ')} width={W} height={USAGE_H} />
             </Box>
           )}
+          {showTotals && (
+            <Box key="sec-totals" {...FRAME}>
+              <Box marginBottom={1}>
+                <Text bold dimColor>
+                  {s.totalsTitle}
+                </Text>
+              </Box>
+              <Svg source={costSvg(W, main, subs, list.length)} alt={`${s.main} ≈${fmtCost(main.cost)}, ${s.subagents(list.length)} ≈${fmtCost(subs.cost)}`} width={W} height={COST_H} />
+              <Text dimColor wrap="wrap">
+                {s.costNote}
+              </Text>
+            </Box>
+          )}
           {p.isCompact ? (
             agentsCompact
           ) : (
@@ -1798,7 +2078,6 @@ export const register: Register = (on, options) => {
                 {tabStrip}
                 {toggleCompact}
               </Box>
-              {showTotals && <Svg source={headerSvg(W, t)} alt={summary} width={W} height={HEADER_H} />}
               {shown.length === 0 && <Text dimColor>{p.tab === 'active' ? s.noActive : s.noDone}</Text>}
               {shown.map(row)}
               {clearDone}
@@ -1820,6 +2099,7 @@ export const register: Register = (on, options) => {
 
     // Terminal and the other surfaces: the same content in text rows.
     const cols = Math.max(24, (e.props.bodyColumns || 40) - FRAME_COLS)
+    const costBarW = Math.max(6, cols - 2)
     const barW = Math.max(6, Math.min(20, cols - 34))
     const bar = (pct: number) => {
       const filled = Math.round((barW * pct) / 100)
@@ -1920,6 +2200,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
+        {settingsRow}
         {showUsage && meters.length > 0 && (
           <Box key="sec-usage" {...FRAME}>
             <Box flexDirection="row" justifyContent="space-between">
@@ -1931,13 +2212,52 @@ export const register: Register = (on, options) => {
             {meters.map(meterRow)}
           </Box>
         )}
-        <Box key="sec-agents" {...FRAME}>
-          <Box flexDirection="row" justifyContent={showTotals ? 'space-between' : 'flex-end'}>
-            {showTotals && (
-              <Text dimColor wrap="truncate-end">
-                ≈{fmtCost(t.cost)} · {fmtTokens(t.tokens)} {s.tokensWord} · {fmtTime(t.time)}
+        {showTotals && (
+          <Box key="sec-totals" {...FRAME}>
+            <Text bold dimColor>
+              {s.totalsTitle}
+            </Text>
+            {(
+              [
+                ['cost-main', s.main, main, CLAY],
+                ['cost-subs', s.subagents(list.length), subs, SUB_COLOR],
+              ] as const
+            ).map(([key, label, part, color]) => (
+              <Box key={key} flexDirection="row" justifyContent="space-between">
+                <Text wrap="truncate-end">
+                  <Text color={color}>● </Text>
+                  {label}
+                </Text>
+                <Text>
+                  <Text dimColor>
+                    {fmtTokens(part.tokens)} {s.fresh} · {fmtTokens(part.cache)} {s.cached}{'  '}
+                  </Text>
+                  <Text bold>≈{fmtCost(part.cost)}</Text>
+                </Text>
+              </Box>
+            ))}
+            <Text wrap="truncate-end">
+              <Text color={CLAY}>{'█'.repeat(Math.round(costBarW * mainShare))}</Text>
+              <Text color={SUB_COLOR} dimColor={main.cost + subs.cost === 0}>
+                {(main.cost + subs.cost === 0 ? '░' : '█').repeat(costBarW - Math.round(costBarW * mainShare))}
               </Text>
-            )}
+            </Text>
+            <Box flexDirection="row" justifyContent="space-between">
+              <Text dimColor>{s.total}</Text>
+              <Text>
+                <Text dimColor>
+                  {fmtTokens(main.tokens + subs.tokens)} {s.fresh} · {fmtTokens(main.cache + subs.cache)} {s.cached}{'  '}
+                </Text>
+                <Text bold>≈{fmtCost(main.cost + subs.cost)}</Text>
+              </Text>
+            </Box>
+            <Text dimColor wrap="wrap">
+              {s.costNote}
+            </Text>
+          </Box>
+        )}
+        <Box key="sec-agents" {...FRAME}>
+          <Box flexDirection="row" justifyContent="flex-end">
             {toggleCompact}
           </Box>
           {p.isCompact ? (

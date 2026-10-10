@@ -28,6 +28,8 @@ export type CrewRun = {
   tokens: number
   costUsd: number
   steps: number
+  /** Tokens the cache served across its requests; `tokens` counts the new ones. */
+  cacheTokens?: number
   /** The last thing it did, one line (`Read hooks/files.ts`). */
   lastAction?: string
   /** Its final answer, cut to a few thousand characters. */
@@ -63,6 +65,7 @@ export type CrewPanel = {
 export type CrewCleared = {
   cost: number
   tokens: number
+  cache?: number
 }
 
 export type CrewFile = {
@@ -128,6 +131,10 @@ declare module 'claude-code' {
       diff: { key: string; text: string; format: 'diff' | 'source' } | null
       /** The highest level each usage meter was warned at (0, 80, 95). */
       warned: Record<string, number>
+      /** Bumped on each change from the settings pane, so both panes draw again. */
+      settingsRev: number
+      /** The main chat's own requests since the mod loaded: estimated cost and tokens. */
+      mainCost: { cost: number; tokens: number; cache?: number }
     }
   }
 }

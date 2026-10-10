@@ -29,8 +29,11 @@ function engine(on: On, listed: AgentInfo[] = []) {
   on('command.register', () => ({ value: {} }) as never)
   on('turn.complete', (_$, e) => ({ text: '', usage: e.usage }))
   on('session.measure', (_$, e) => ({ changed: e.changed }))
+  const configSets: { key: string; value: unknown }[] = []
+  on('config.list', () => ({ value: [] }))
+  on('config.set', (_$, e) => (configSets.push({ key: e.key, value: e.value }), { value: e.value }))
   on('tool.call', () => ({ result: 'ok' }) as never)
-  return { opened, status, toasts, clock }
+  return { opened, status, toasts, clock, configSets }
 }
 
 const start = ($: Engine) => $.session.start({ cwd: '/work', surface: null, isInteractive: true })
@@ -96,7 +99,7 @@ test('session totals stay hidden unless the option turns them on', async ($, on)
   await start($)
   await spawn($, 'Etwas tun', 'general-purpose')
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ text: /Tokens · / })).toBeUndefined()
+  expect(await ui.find({ text: /Subagenten \(\d+\)/ })).toBeUndefined()
 })
 
 test('the showTotals option draws them', { options: { showTotals: true } }, async ($, on) => {
@@ -104,7 +107,7 @@ test('the showTotals option draws them', { options: { showTotals: true } }, asyn
   await start($)
   await spawn($, 'Etwas tun', 'general-purpose')
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ text: /Tokens · / })).toBeDefined()
+  expect(await ui.find({ text: /Subagenten \(\d+\)/ })).toBeDefined()
 })
 
 test('a framed usage section shows context, 5h and week', async ($, on) => {
@@ -238,4 +241,33 @@ test('a long pause between rounds folds into a break on the timeline', async ($,
   await $.turn.complete({ agentId: 'a2', reason: 'answer', answer: 'ok', turnId: 't2' } as never)
   const ui = await mount($, 'desktop')
   expect(JSON.stringify(await ui.drawn())).toMatch(/\+20:0\d/)
+})
+
+const SETTINGS_PROPS = { title: 'Crew · Einstellungen', isFocused: false, bodyColumns: 60, placement: 'dock' } as never
+
+test('/crew-settings opens the settings pane', async ($, on) => {
+  const { opened } = engine(on)
+  await start($)
+  const r = await $.command.run({ command: 'crew-settings', args: '' } as never)
+  expect(opened).toContain('agent-crew-settings')
+  expect(JSON.stringify(r)).toContain('Crew-Einstellungen')
+})
+
+test('settings write through /config and take effect at once', async ($, on) => {
+  const { configSets } = engine(on)
+  await start($)
+  await spawn($, 'Etwas tun', 'general-purpose')
+  for (const surface of SURFACES) {
+    const settings = await $.ui.mount({ plugin: 'agent-crew', surface, component: 'Pane', requestId: 'agent-crew-settings', props: SETTINGS_PROPS })
+    expect(JSON.stringify(await settings.drawn())).toContain('Benachrichtigungen')
+    await settings.press({ key: 'set-notifyAgents-all' })
+    expect(configSets.at(-1)).toEqual({ key: 'agent-crew.notifyAgents', value: 'all' })
+    await settings.unmount()
+  }
+  const settings = await $.ui.mount({ plugin: 'agent-crew', surface: 'terminal', component: 'Pane', requestId: 'agent-crew-settings', props: SETTINGS_PROPS })
+  await settings.press({ key: 'set-showTotals' })
+  expect(configSets.at(-1)).toEqual({ key: 'agent-crew.showTotals', value: true })
+  const crew = await mount($, 'terminal')
+  expect(await crew.find({ text: /Subagenten \(\d+\)/ })).toBeDefined()
+  expect(await crew.find({ key: 'open-settings' })).toBeDefined()
 })

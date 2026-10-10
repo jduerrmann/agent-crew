@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Claude_Code-mod-D97757" alt="Claude Code mod">
-  <img src="https://img.shields.io/badge/agent--crew-0.2.0-378ADD" alt="agent-crew 0.2.0">
+  <img src="https://img.shields.io/badge/agent--crew-0.3.0-378ADD" alt="agent-crew 0.3.0">
   <img src="https://img.shields.io/badge/license-PolyForm_Noncommercial-22c55e" alt="PolyForm Noncommercial license">
 </p>
 
@@ -80,7 +80,9 @@ Then run `/crew`. The pane also opens on its own when the first subagent of a se
 
 ## Options
 
-Set them in `/config` under agent-crew, or in `~/.claude/settings.json`:
+Run **`/crew-settings`**, or press **⚙ Settings** at the top of the panel. A settings tab opens with switches and choices in two groups, *Display* and *Notifications*, and every change applies at once.
+
+The tab writes the same values `/config` does, so you can use that too. Or set them in `~/.claude/settings.json`:
 
 ```json
 { "pluginConfigs": { "agent-crew": { "options": { "showTotals": true, "notifyAgents": "all" } } } }
@@ -92,7 +94,7 @@ Set them in `/config` under agent-crew, or in `~/.claude/settings.json`:
 | `autoOpen` | `true` | Open the pane when the first subagent of a session starts. |
 | `showUsage` | `true` | The usage section. |
 | `showTimeline` | `true` | The timeline. |
-| `showTotals` | `false` | Cost, tokens and time of all subagents together. |
+| `showTotals` | `false` | A cost section: the main chat and the subagents apart, new and cached tokens, and the total. |
 | `notifyAgents` | `background` | Notices when agents end: `off`, `failures`, `background` (background agents and any failure) or `all`. |
 | `limitWarnings` | `true` | Warnings at 80 % / 95 % of a limit and 85 % context. |
 | `warnConflicts` | `true` | The notice on conflicting edits. |

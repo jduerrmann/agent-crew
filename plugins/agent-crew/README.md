@@ -28,7 +28,7 @@ Reads come from `Read`, `Grep` results and shell readers (`cat`, `head`, `sed`, 
 
 ## Options
 
-Set them in `/config`, or under `pluginConfigs.agent-crew.options` in `~/.claude/settings.json`.
+The easiest way is **`/crew-settings`**, or the ⚙ button at the top of the panel. Both open a settings tab with switches and choices, and changes apply at once. The tab writes the same values as `/config`, which works too, as does `pluginConfigs.agent-crew.options` in `~/.claude/settings.json`.
 
 | Option | Default | |
 | --- | --- | --- |
@@ -36,7 +36,7 @@ Set them in `/config`, or under `pluginConfigs.agent-crew.options` in `~/.claude
 | `autoOpen` | `true` | open the pane on the first subagent of a session |
 | `showUsage` | `true` | the usage section |
 | `showTimeline` | `true` | the timeline under the subagents |
-| `showTotals` | `false` | cost, tokens and time of all subagents together |
+| `showTotals` | `false` | a cost section: main chat and subagents apart, new and cached tokens, total |
 | `notifyAgents` | `background` | `off`, `failures`, `background`, `all` |
 | `limitWarnings` | `true` | warnings at 80 % / 95 % of a limit, 85 % context |
 | `warnConflicts` | `true` | the notice on conflicting edits |
