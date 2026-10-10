@@ -1,0 +1,69 @@
+{
+  "name": "agent-crew",
+  "version": "0.2.0",
+  "description": "One pane for every subagent (tabs, details, timeline), the files they read, changed and committed (history, diffs, conflicts), and the session's usage.",
+  "author": { "name": "jduerrmann", "url": "https://github.com/jduerrmann" },
+  "homepage": "https://github.com/jduerrmann/claude-mods/tree/main/plugins/agent-crew",
+  "repository": "https://github.com/jduerrmann/claude-mods",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Panel language",
+      "description": "auto follows Claude Code's language setting, then the system locale",
+      "default": "auto",
+      "options": ["auto", "de", "en"]
+    },
+    "showUsage": {
+      "type": "boolean",
+      "title": "Show usage",
+      "description": "A framed section at the top of the panel: the session's context fill and the 5-hour and weekly limits",
+      "default": true
+    },
+    "showTotals": {
+      "type": "boolean",
+      "title": "Show session totals",
+      "description": "Shows cost, tokens and time of all subagents together at the top of the panel; each agent's own figures show either way",
+      "default": false
+    },
+    "showTimeline": {
+      "type": "boolean",
+      "title": "Show the timeline",
+      "description": "A timeline under the subagents: when each one ran, on one shared time axis",
+      "default": true
+    },
+    "notifyAgents": {
+      "type": "string",
+      "title": "Notify when subagents end",
+      "description": "off; failures (failed or stopped ones); background (background and workflow agents, and any failure); all",
+      "default": "background",
+      "options": ["off", "failures", "background", "all"]
+    },
+    "limitWarnings": {
+      "type": "boolean",
+      "title": "Warn about limits",
+      "description": "A notice when the 5-hour or weekly limit passes 80 % and 95 %, and when the context passes 85 %",
+      "default": true
+    },
+    "warnConflicts": {
+      "type": "boolean",
+      "title": "Warn about conflicting edits",
+      "description": "A notice, and a ⚠ in the file tree, when two agents change the same file within ten minutes",
+      "default": true
+    },
+    "notifyVia": {
+      "type": "string",
+      "title": "Notices as",
+      "description": "toast: inside Claude Code; system: the terminal's or system's notification, a toast where none is sent",
+      "default": "toast",
+      "options": ["toast", "system"]
+    },
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Open the panel on the first subagent",
+      "description": "Opens the agents panel once per session when the first subagent starts",
+      "default": true
+    }
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

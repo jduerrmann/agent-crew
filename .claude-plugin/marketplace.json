@@ -1,0 +1,14 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "jduerrmann", "url": "https://github.com/jduerrmann" },
+  "metadata": { "description": "Personal Claude Code mods." },
+  "plugins": [
+    {
+      "name": "agent-crew",
+      "source": "./plugins/agent-crew",
+      "description": "Mod: one pane for every subagent (tabs, details, timeline), the files they read, changed and committed (history, diffs, conflicts), and the session's usage.",
+      "version": "0.2.0",
+      "category": "mod"
+    }
+  ]
+}

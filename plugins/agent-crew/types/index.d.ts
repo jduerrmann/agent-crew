@@ -1,0 +1,133 @@
+/** Where a run stands: `idle` is a teammate or background agent waiting for a message. */
+export type CrewStatus = 'running' | 'idle' | 'done' | 'failed' | 'stopped'
+
+/** How the run was started. `listed` came from `$.agent.list()` without a spawn the mod saw. */
+export type CrewKind = 'agent' | 'fork' | 'teammate' | 'workflow' | 'listed'
+
+export type CrewRun = {
+  /** The engine's agent id, or the spawn's tool_use_id when the engine gave none. */
+  id: string
+  agentId?: string
+  kind: CrewKind
+  type: string
+  description: string
+  /** The task as given, cut to a few thousand characters. */
+  prompt?: string
+  name?: string
+  model: string
+  effort?: string
+  isBackground: boolean
+  parentId?: string
+  workflowRunId?: string
+  workflowIndex?: number
+  status: CrewStatus
+  startedAt: number
+  endedAt?: number
+  contextTokens: number
+  contextMax: number
+  tokens: number
+  costUsd: number
+  steps: number
+  /** The last thing it did, one line (`Read hooks/files.ts`). */
+  lastAction?: string
+  /** Its final answer, cut to a few thousand characters. */
+  lastAnswer?: string
+}
+
+/** One entry of a subagent's activity log: a tool call, or text it wrote between calls. */
+export type CrewLog = {
+  at: number
+  kind: 'tool' | 'say'
+  tool?: string
+  text: string
+  isError?: boolean
+}
+
+export type CrewTab = 'active' | 'done'
+
+export type CrewPanel = {
+  tab: CrewTab
+  expanded: string[]
+  isCompact: boolean
+  hasAutoOpened: boolean
+  fileFilter: 'all' | 'changed'
+  isFilesCollapsed: boolean
+  /** The file whose history and diff are open. */
+  openFile?: string
+  /** An agent whose files are lit while the rest dim. */
+  focusAgent?: string
+  isTimelineOpen: boolean
+}
+
+/** What "Clear finished" took off the list, so the session totals stay whole. */
+export type CrewCleared = {
+  cost: number
+  tokens: number
+}
+
+export type CrewFile = {
+  /** Case-folded on Windows; what git status and tool calls are matched by. */
+  key: string
+  path: string
+  reads: number
+  writes: number
+  lastAt: number
+  lastKind: 'read' | 'write' | 'commit'
+  /** Agent ids that touched it; `main` for the main conversation. */
+  agents: string[]
+  commit?: string
+  commitAt?: number
+  /** Who read, changed or committed it and when, newest last. */
+  history?: CrewFileEvent[]
+  /** Agents that changed it close together; cleared when it is committed. */
+  conflict?: string[]
+}
+
+export type CrewFileEvent = {
+  at: number
+  agent: string
+  kind: 'read' | 'write' | 'commit'
+}
+
+export type CrewGitFile = {
+  path: string
+  /** Porcelain XY: ` M`, `M `, `??`, `A `, ` D`, ... */
+  code: string
+  add: number
+  del: number
+}
+
+export type CrewGit = {
+  root: string
+  branch: string
+  upstream: string
+  ahead: number
+  behind: number
+  head: string
+  files: Record<string, CrewGitFile>
+}
+
+/** The session's context fill and the plan's rate-limit windows, as the status line has them. */
+export type CrewUsage = {
+  context: { percent: number | null; tokens?: number; window: number }
+  limits: { kind: string; percent: number; resetsAt?: string }[]
+}
+
+declare module 'claude-code' {
+  interface PluginState {
+    'agent-crew': {
+      runs: CrewRun[]
+      logs: Record<string, CrewLog[]>
+      panel: CrewPanel
+      cleared: CrewCleared
+      files: CrewFile[]
+      git: CrewGit | null
+      now: number
+      usage: CrewUsage
+      /** The diff of the open file, as git printed it (or its text when untracked). */
+      diff: { key: string; text: string; format: 'diff' | 'source' } | null
+      /** The highest level each usage meter was warned at (0, 80, 95). */
+      warned: Record<string, number>
+    }
+  }
+}
