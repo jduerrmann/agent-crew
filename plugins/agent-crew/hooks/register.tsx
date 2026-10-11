@@ -1190,6 +1190,10 @@ async function openFile($: EngineInterface, path: string): Promise<void> {
   }
 }
 
+async function blurSearch($: EngineInterface): Promise<void> {
+  if ((await readPanel($)).isSearchFocused) await setPanel($, () => ({ isSearchFocused: false }))
+}
+
 // Enter in the search line: the first file the query matches, its card open.
 async function openFirstHit($: EngineInterface, text: string): Promise<void> {
   const q = text.trim().toLowerCase()
@@ -1681,17 +1685,34 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // The search field never hears that it lost the keys: whatever else takes
+  // them (the prompt box, a button or the ring in the pane) ends its focus.
+  on('prompt.edit', async ($, e, next) => {
+    await blurSearch($)
+    return next(e)
+  })
+  on('ui.press', { requestId: PANE }, async ($, e, next) => {
+    await blurSearch($)
+    return next(e)
+  })
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    await blurSearch($)
+    return next(e)
+  })
+
   // A click in one of the pane's Clients: a tab of the tab strip, or a row of
   // the file tree.
   on('ui.message', async ($, e, next) => {
     if (e.requestId !== PANE || typeof e.element !== 'string' || !e.data || typeof e.data !== 'object') return next(e)
     if (e.element === 'tabs') {
+      await blurSearch($)
       const tab = (e.data as { tab?: unknown }).tab
       if (tab === 'active' || tab === 'done') await setPanel($, () => ({ tab }))
       return {}
     }
     if (e.element === 'search') {
-      const data = e.data as { query?: unknown; submit?: unknown }
+      const data = e.data as { query?: unknown; submit?: unknown; focus?: unknown }
+      if (data.focus === true && !(await readPanel($)).isSearchFocused) await setPanel($, () => ({ isSearchFocused: true }))
       if (typeof data.query === 'string') {
         const query = data.query
         await setPanel($, () => ({ fileQuery: query }))
@@ -1700,6 +1721,7 @@ export const register: Register = (on, options) => {
       return {}
     }
     if (e.element.startsWith('rows-')) {
+      await blurSearch($)
       const id = (e.data as { press?: unknown }).press
       if (typeof id === 'string') await pressRow($, id)
       return {}
@@ -1981,7 +2003,7 @@ export const register: Register = (on, options) => {
             key="search"
             module="./searchbox.tsx"
             width="100%"
-            props={{ value: p.fileQuery ?? '', placeholder: s.search, hits: query ? s.hits(views.length) : '', line: '#6b6b68', accent: CLAY } satisfies SearchBoxProps}
+            props={{ value: p.fileQuery ?? '', placeholder: s.search, hits: query ? s.hits(views.length) : '', line: '#6b6b68', accent: CLAY, isFocused: p.isSearchFocused === true } satisfies SearchBoxProps}
           />
         ) : SearchInput ? (
           <Box key="files-search" flexDirection="row" alignItems="center" gap={1}>

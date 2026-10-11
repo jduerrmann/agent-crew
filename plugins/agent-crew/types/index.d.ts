@@ -60,6 +60,8 @@ export type CrewPanel = {
   shutDirs?: string[]
   /** What the search line above the file tree holds. */
   fileQuery?: string
+  /** Whether the search line holds the keys, as far as the hooks can tell. */
+  isSearchFocused?: boolean
   /** An agent whose files are lit while the rest dim. */
   focusAgent?: string
   isTimelineOpen: boolean

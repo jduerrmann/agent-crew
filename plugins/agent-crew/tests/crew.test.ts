@@ -410,3 +410,21 @@ test('a folder shuts and opens on a press', async ($, on) => {
     expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
   }
 })
+
+test('the search field loses its focus when the prompt or another button takes the keys', async ($, on) => {
+  engine(on)
+  on('prompt.edit', (_$, e) => ({ text: e.text, cursor: e.cursor }) as never)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  const ui = await mount($, 'terminal')
+  const isFocused = async () => JSON.stringify(await ui.drawn()).includes('"isFocused":true')
+  expect(await isFocused()).toBe(false)
+  await ui.pointer({ type: 'down', x: 5, y: 1, button: 'left', in: 'search' })
+  expect(await isFocused()).toBe(true)
+  await $.prompt.edit({ text: 'a', cursor: 1, start: 0, end: 0, inputText: 'a' } as never)
+  expect(await isFocused()).toBe(false)
+  await ui.key({ key: 'a', in: 'search' })
+  expect(await isFocused()).toBe(true)
+  await ui.press({ key: 'files-filter' })
+  expect(await isFocused()).toBe(false)
+})
