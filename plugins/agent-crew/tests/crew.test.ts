@@ -745,6 +745,21 @@ test('a commit whose files git cannot list this time is booked on the next look'
   expect(JSON.stringify(await ui.drawn())).toContain('✓ bbbbbbb')
 })
 
+test('a commit made outside the session shows within ten seconds while the pane is open, with no ↻ to press', async ($, on) => {
+  const state = { head: 'a'.repeat(40) }
+  const { clock } = engine(on, [], fakeGit(state), [{ id: 'agent-crew', isShown: true, isPlaced: true }])
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await clock.advance(1_000)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ key: 'files-refresh' })).toBeUndefined()
+  // A commit in the person's own terminal: no tool call tells the mod.
+  state.head = 'b'.repeat(40)
+  await clock.advance(11_000)
+  await expandAll(ui)
+  expect(JSON.stringify(await ui.drawn())).toContain('✓ bbbbbbb')
+})
+
 test('a file just touched shows, shimmering, inside folders that are shut, and they shut again after', async ($, on) => {
   const { clock } = engine(on)
   await start($)
@@ -816,6 +831,24 @@ async function rowOf(ui: Mounted, id: string): Promise<{ right: { t: string; c?:
   return row
 }
 
+test('under All an untouched file has no sign and a bright name, apart from the grey folders', async ($, on) => {
+  const { clock } = engine(on)
+  const entry = (name: string, kind: 'file' | 'dir') => ({ name, kind, size: 1, mtimeMs: 0, isLink: false })
+  const listing: Record<string, ReturnType<typeof entry>[]> = { '/work': [entry('src', 'dir')], '/work/src': [entry('app.ts', 'file'), entry('idle.ts', 'file')] }
+  on('fs.list', (_$, e) => ({ value: listing[(e as { path: string }).path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')] ?? [] }) as never)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await clock.advance(10_000)
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'files-filter-all' })
+  await clock.advance(10)
+  await expandAll(ui)
+  const row = (await rowOf(ui, '/work/src/idle.ts')) as { left: { t: string; dim?: boolean }[] } | undefined
+  expect(row?.left.map(s => s.t).join('')).toBe('    idle.ts')
+  expect(row?.left.find(s => s.t === 'idle.ts')?.dim).toBeUndefined()
+  expect((await rowOf(ui, 'dir:/src'))?.left[0]?.dim).toBe(true)
+})
+
 test('a shut folder counts the files inside it by state and shows their agents', async ($, on) => {
   const { clock } = engine(on)
   const entry = (name: string, kind: 'file' | 'dir') => ({ name, kind, size: 1, mtimeMs: 0, isLink: false })
@@ -855,6 +888,8 @@ test('a deleted file shows as a red ✗, in its row, its folder and the legend',
   await $.tool.call({ tool: 'Bash', command: 'rm src/old.ts' } as never)
   await clock.advance(10_000)
   const ui = await mount($, 'terminal')
+  // Only git saw the Bash command's work: it shows under Changes.
+  await ui.press({ key: 'files-filter-changed' })
   expect((await rowOf(ui, 'dir:/src'))?.right.map(s => s.t).join('')).toBe('✎1 ✗1   ')
   expect((await rowOf(ui, 'dir:/src'))?.right.find(s => s.t === '✗1 ')?.c).toBe('#ef4444')
   await expandAll(ui)
@@ -862,6 +897,33 @@ test('a deleted file shows as a red ✗, in its row, its folder and the legend',
   expect(row?.left.find(s => s.t === '✗ ')?.c).toBe('#ef4444')
   expect(row?.right.find(s => s.t === ' gelöscht')?.c).toBe('#ef4444')
   expect(await ui.find({ text: /gelöscht/ })).toBeDefined()
+  // In a narrow pane the header's filters wrap, and the legend breaks between entries, never inside one.
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('✗ gelöscht')
+  expect(drawn).toMatch(/"key":"files-head"[^}]*"flexWrap":"wrap"|"flexWrap":"wrap"[^}]*"key":"files-head"/)
+})
+
+test("Activity holds what the agents read and changed, Changes what git reports, whoever made it", async ($, on) => {
+  const git = fakeGit({ head: 'a'.repeat(40) })
+  const { clock } = engine(on, [], argv =>
+    argv.includes('status') ? { exitCode: 0, stdout: '## main\u0000 M src/app.ts\u0000 M src/elsewhere.ts\u0000' } : git(argv),
+  )
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/notes.ts' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'a', new_string: 'b' } as never)
+  await clock.advance(10_000)
+  const ui = await mount($, 'terminal')
+  await expandAll(ui)
+  // Activity: the file only read, and the one read and changed; not the one changed in another editor.
+  expect(await hasRow(ui, '/work/src/notes.ts')).toBe(true)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  expect(await hasRow(ui, '/work/src/elsewhere.ts')).toBe(false)
+  await ui.press({ key: 'files-filter-changed' })
+  await expandAll(ui)
+  expect(await hasRow(ui, '/work/src/notes.ts')).toBe(false)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  expect(await hasRow(ui, '/work/src/elsewhere.ts')).toBe(true)
 })
 
 test('a new file, untracked or staged as added, shows as a blue +, in its row, its folder and the legend', async ($, on) => {
@@ -873,6 +935,7 @@ test('a new file, untracked or staged as added, shows as a blue +, in its row, i
   await $.tool.call({ tool: 'Bash', command: 'touch src/fresh.ts' } as never)
   await clock.advance(10_000)
   const ui = await mount($, 'terminal')
+  await ui.press({ key: 'files-filter-changed' })
   expect((await rowOf(ui, 'dir:/src'))?.right.map(s => s.t).join('')).toBe('✎1 +2   ')
   expect((await rowOf(ui, 'dir:/src'))?.right.find(s => s.t === '+2 ')?.c).toBe('#3b82f6')
   await expandAll(ui)

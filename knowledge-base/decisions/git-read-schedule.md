@@ -12,7 +12,8 @@ updated: 2026-10-11
 **Context:** there is no event for changes outside the session ([no-outside-change-events](../limits/no-outside-change-events.md)), and a write needs a moment before git sees it.
 
 **Decision:**
-- Git is read 500 ms after a write or a command that may change the tree, every 10 s while the pane is open, and on ↻.
+- Git is read 500 ms after a write or a command that may change the tree, when the pane opens, and every 10 s while it is open.
+- No ↻ button: it only saved those 10 s for changes made outside the session, and the user had it removed.
 - One read runs at a time, with at most one more queued.
 - The open diff reloads on every read.
 

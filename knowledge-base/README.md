@@ -73,9 +73,9 @@ Rules:
 ### Files
 - [client-file-rows](decisions/client-file-rows.md): file rows as a Client like filetree: clickable while shimmering, double click opens
 - [own-search-field](decisions/own-search-field.md): full-width search as a Client; Input always shows a submit button
-- [files-tree-navigation](decisions/files-tree-navigation.md): folders shut but sum up (✎3 ◉1 ●●), new files blue +, filters Activity/Changes/All, breadcrumbs, card with history and diff
+- [files-tree-navigation](decisions/files-tree-navigation.md): folders shut but sum up (✎3 ◉1 ●●), new files blue +, Activity (agents) / Changes (git) / All, breadcrumbs, card with history and diff
 - [conflict-window](decisions/conflict-window.md): two writers on one file within 10 minutes is a conflict until a commit
-- [git-read-schedule](decisions/git-read-schedule.md): git read 500 ms after changes, every 10 s while open, on ↻; single-flight
+- [git-read-schedule](decisions/git-read-schedule.md): git read 500 ms after changes, on opening, every 10 s while open; no ↻ (user); single-flight
 
 ### Release and process
 - [update-check](decisions/update-check.md): daily check against GitHub `plugin.json`; marketplace installs update, folder copies get `git pull`

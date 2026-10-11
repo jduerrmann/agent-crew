@@ -1652,7 +1652,8 @@ const fileColor = (v: FileView): string => {
 }
 
 const fileGlyph = (v: FileView): string => {
-  if (!v.file && !v.gitFile) return '·'
+  // No sign for an untouched file, only room for one so the names stand in line.
+  if (!v.file && !v.gitFile) return ' '
   if (isDeleted(v)) return '✗'
   if (isNew(v)) return '+'
   if (v.gitFile || v.file?.lastKind === 'write') return '✎'
@@ -1670,9 +1671,10 @@ const gitBadge = (v: FileView): string => {
 
 const badgeColor = (v: FileView): string => (isDeleted(v) ? DELETE_COLOR : isNew(v) ? NEW_COLOR : v.gitFile ? WRITE_COLOR : COMMIT_COLOR)
 
-// The tree's files by its filter: `activity`, what the session's agents read and
-// changed (and what git reports as changed); `changed`, the changes alone;
-// `all`, every file under the root besides, untouched ones drawn quiet.
+// The tree's files by its filter: `activity`, what the session's agents read,
+// changed and committed, however it stands in git now; `changed`, what git
+// reports as changed, by whomever, and the session's commits; `all`, every file
+// under the root besides, untouched ones without a sign.
 const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: CrewPanel['fileFilter'], everyPath: readonly string[] = []): FileView[] => {
   const map = new Map<string, FileView>()
   const label = (path: string) => shortPath(path, base)
@@ -1691,7 +1693,9 @@ const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: Cr
     }
   }
   const out = [...map.values()]
-  return filter === 'changed' ? out.filter(isChanged) : out
+  if (filter === 'changed') return out.filter(isChanged)
+  // Git's changes no agent touched (another editor, a Bash command) are left to `changed`.
+  return filter === 'activity' ? out.filter(v => v.file) : out
 }
 
 const isUntouched = (v: FileView): boolean => !v.file && !v.gitFile
@@ -2881,7 +2885,8 @@ export const register: Register = (on, options) => {
       const branch = g ? `⑂ ${g.branch || 'HEAD'}${g.ahead ? ` ↑${g.ahead}` : ''}${g.behind ? ` ↓${g.behind}` : ''}` : ''
       const focusRun = p.focusAgent ? byAgent.get(p.focusAgent) : undefined
       const filesHeader = (
-        <Box key="files-head" flexDirection="row" alignItems="center" gap={2} marginBottom={p.isFilesCollapsed ? 0 : 1}>
+        // Wraps in a narrow pane rather than cutting off the last filter.
+        <Box key="files-head" flexDirection="row" flexWrap="wrap" alignItems="center" gap={2} marginBottom={p.isFilesCollapsed ? 0 : 1}>
           <Button
             key="files-toggle"
             label={`${p.isFilesCollapsed ? '▸' : '▾'} ${s.files} · ${views.length}`}
@@ -2926,7 +2931,6 @@ export const register: Register = (on, options) => {
               }}
             />
           )}
-          <Button key="files-refresh" label="↻" plain dimColor onPress={() => syncGit($)} />
         </Box>
       )
 
@@ -3105,7 +3109,8 @@ export const register: Register = (on, options) => {
               left: [
                 { t: indent },
                 { t: `${fileGlyph(v)} `, c: color, dim: isDim, sh: tone },
-                { t: r.name, b: isFresh || isOpen, c: isOpen ? color : undefined, dim: isDim || isUntouched(v), sh: tone },
+                // An untouched file's name stays bright, so it reads apart from the grey folders.
+                { t: r.name, b: isFresh || isOpen, c: isOpen ? color : undefined, dim: isDim, sh: tone },
               ],
               right,
             },
@@ -3187,7 +3192,8 @@ export const register: Register = (on, options) => {
           {!p.isFilesCollapsed && rowsOf('rows-b', below)}
           {!p.isFilesCollapsed && fileTree.length > MAX_FILE_ROWS && <Text dimColor>{s.more(fileTree.length - MAX_FILE_ROWS)}</Text>}
           {!p.isFilesCollapsed && views.length > 0 && (
-            // Set off from the tree by a rule; each sign in the colour it marks.
+            // Set off from the tree by a rule; each sign in the colour it marks. A
+            // no-break space keeps a sign with its word when the line wraps.
             <Box key="files-legend" flexDirection="column" marginTop={1}>
               {ruleRow('files-rule')}
               <Text>
@@ -3202,7 +3208,7 @@ export const register: Register = (on, options) => {
                 ).map(([sign, color, label], i) => (
                   <Text key={`lg-${i}`}>
                     {i ? '   ' : ''}
-                    <Text color={color}>{sign}</Text> <Text color={color}>{label}</Text>
+                    <Text color={color}>{`${sign} ${label}`}</Text>
                   </Text>
                 ))}
               </Text>
