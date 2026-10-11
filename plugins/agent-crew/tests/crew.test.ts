@@ -864,6 +864,28 @@ test('a deleted file shows as a red ✗, in its row, its folder and the legend',
   expect(await ui.find({ text: /gelöscht/ })).toBeDefined()
 })
 
+test('a new file, untracked or staged as added, shows as a blue +, in its row, its folder and the legend', async ($, on) => {
+  const git = fakeGit({ head: 'a'.repeat(40) })
+  const { clock } = engine(on, [], argv =>
+    argv.includes('status') ? { exitCode: 0, stdout: '## main\u0000?? src/fresh.ts\u0000A  src/staged.ts\u0000 M src/app.ts\u0000' } : git(argv),
+  )
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: 'touch src/fresh.ts' } as never)
+  await clock.advance(10_000)
+  const ui = await mount($, 'terminal')
+  expect((await rowOf(ui, 'dir:/src'))?.right.map(s => s.t).join('')).toBe('✎1 +2   ')
+  expect((await rowOf(ui, 'dir:/src'))?.right.find(s => s.t === '+2 ')?.c).toBe('#3b82f6')
+  await expandAll(ui)
+  for (const name of ['fresh.ts', 'staged.ts']) {
+    const row = (await rowOf(ui, `/work/src/${name}`)) as { left: { t: string; c?: string }[]; right: { t: string; c?: string }[] } | undefined
+    expect(row?.left.find(s => s.t === '+ ')?.c).toBe('#3b82f6')
+    expect(row?.right.find(s => s.t === ' neu')?.c).toBe('#3b82f6')
+  }
+  const app = (await rowOf(ui, '/work/src/app.ts')) as { left: { t: string; c?: string }[] } | undefined
+  expect(app?.left.find(s => s.t === '✎ ')?.c).toBe('#f97316')
+  expect(await ui.find({ text: /neu/ })).toBeDefined()
+})
+
 // The model beneath: each request answers with the context `tokens.n` sets.
 function modelSteps(on: On) {
   const tokens = { n: 0 }

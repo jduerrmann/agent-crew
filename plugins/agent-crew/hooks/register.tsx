@@ -63,6 +63,7 @@ const READ_COLOR = '#a855f7'
 const WRITE_COLOR = '#f97316'
 const COMMIT_COLOR = '#22c55e'
 const DELETE_COLOR = '#ef4444'
+const NEW_COLOR = '#3b82f6'
 
 // ---------------------------------------------------------------------------
 // Language: the `language` option, else Claude Code's `language` setting, else
@@ -108,7 +109,7 @@ const STRINGS = {
     files: 'Dateien',
     fileFilters: { activity: 'Aktivität', changed: 'Änderungen', all: 'Alle' },
     noFiles: 'Noch keine Dateien gelesen oder geändert.',
-    legend: { read: 'gelesen', write: 'geändert', commit: 'committet', delete: 'gelöscht' },
+    legend: { read: 'gelesen', write: 'geändert', isNew: 'neu', commit: 'committet', delete: 'gelöscht' },
     more: (n: number) => `… ${n} weitere`,
     main: 'Hauptchat',
     totalsTitle: 'Kosten',
@@ -198,7 +199,7 @@ const STRINGS = {
     files: 'Files',
     fileFilters: { activity: 'Activity', changed: 'Changes', all: 'All' },
     noFiles: 'No files read or changed yet.',
-    legend: { read: 'read', write: 'changed', commit: 'committed', delete: 'deleted' },
+    legend: { read: 'read', write: 'changed', isNew: 'new', commit: 'committed', delete: 'deleted' },
     more: (n: number) => `… ${n} more`,
     main: 'main chat',
     totalsTitle: 'Cost',
@@ -1638,9 +1639,13 @@ const isChanged = (v: FileView): boolean => Boolean(v.gitFile || (v.file && (v.f
 /** Gone from the working tree, as git sees it: drawn as a red ✗. */
 const isDeleted = (v: FileView): boolean => Boolean(v.gitFile && !v.gitFile.code.includes('?') && v.gitFile.code.includes('D'))
 
+/** Not in the last commit yet, untracked or staged as added: drawn as a blue +. */
+const isNew = (v: FileView): boolean => Boolean(v.gitFile && !isDeleted(v) && (v.gitFile.code.includes('?') || v.gitFile.code.startsWith('A')))
+
 const fileColor = (v: FileView): string => {
   if (!v.file && !v.gitFile) return UNTOUCHED_COLOR
   if (isDeleted(v)) return DELETE_COLOR
+  if (isNew(v)) return NEW_COLOR
   if (v.gitFile || v.file?.lastKind === 'write') return WRITE_COLOR
   if (v.file?.commit) return COMMIT_COLOR
   return READ_COLOR
@@ -1648,8 +1653,8 @@ const fileColor = (v: FileView): string => {
 
 const fileGlyph = (v: FileView): string => {
   if (!v.file && !v.gitFile) return '·'
-  if (v.gitFile?.code.includes('?')) return '+'
   if (isDeleted(v)) return '✗'
+  if (isNew(v)) return '+'
   if (v.gitFile || v.file?.lastKind === 'write') return '✎'
   if (v.file?.commit) return '✓'
   return '◉'
@@ -1658,12 +1663,12 @@ const fileGlyph = (v: FileView): string => {
 const gitBadge = (v: FileView): string => {
   const g = v.gitFile
   if (!g) return v.file?.commit ? `✓ ${v.file.commit}` : ''
-  if (g.code.includes('?')) return tr().isNew
-  if (g.code.includes('D')) return tr().isDeleted
+  if (isDeleted(v)) return tr().isDeleted
+  if (isNew(v)) return tr().isNew
   return g.add || g.del ? `+${g.add} −${g.del}` : g.code.trim()
 }
 
-const badgeColor = (v: FileView): string => (isDeleted(v) ? DELETE_COLOR : v.gitFile ? WRITE_COLOR : COMMIT_COLOR)
+const badgeColor = (v: FileView): string => (isDeleted(v) ? DELETE_COLOR : isNew(v) ? NEW_COLOR : v.gitFile ? WRITE_COLOR : COMMIT_COLOR)
 
 // The tree's files by its filter: `activity`, what the session's agents read and
 // changed (and what git reports as changed); `changed`, the changes alone;
@@ -1697,7 +1702,7 @@ const isUntouched = (v: FileView): boolean => !v.file && !v.gitFile
 // it has no file in goes dim, as its file rows would.
 const FOLDER_SIGNS = [
   ['✎', WRITE_COLOR],
-  ['+', WRITE_COLOR],
+  ['+', NEW_COLOR],
   ['✗', DELETE_COLOR],
   ['✓', COMMIT_COLOR],
   ['◉', READ_COLOR],
@@ -1731,12 +1736,13 @@ const plainHot = (s: HotSeg): HotSeg => Object.fromEntries(Object.entries(s).fil
 
 // The shimmer's tones, after filetree's (Kurt Buhler, MIT): the base colour, then
 // three steps lighter for the band's edge, shoulder and crest. A deleted file
-// shimmers red, whatever its last touch was.
-const SHIMMER: Record<CrewFile['lastKind'] | 'delete', string[]> = {
+// shimmers red and a new one blue, whatever its last touch was.
+const SHIMMER: Record<CrewFile['lastKind'] | 'delete' | 'new', string[]> = {
   read: ['#a855f7', '#c084fc', '#d8b4fe', '#f3e8ff'],
   write: ['#f97316', '#fb923c', '#fdba74', '#ffedd5'],
   commit: ['#22c55e', '#4ade80', '#86efac', '#dcfce7'],
   delete: ['#ef4444', '#f87171', '#fca5a5', '#fee2e2'],
+  new: ['#3b82f6', '#60a5fa', '#93c5fd', '#dbeafe'],
 }
 
 // A double press on a file opens it, as in filetree; a single one its card.
@@ -3088,7 +3094,7 @@ export const register: Register = (on, options) => {
           const isOpen = p.openFile === v.key
           // Only while the focused agent is listed, and so its ✕ in the header with it.
           const isDim = Boolean(focusRun && p.focusAgent && !(v.file?.agents ?? []).includes(p.focusAgent))
-          const tone = isFresh && !isDim ? (isDeleted(v) ? 'delete' : (v.file?.lastKind ?? 'read')) : undefined
+          const tone = isFresh && !isDim ? (isDeleted(v) ? 'delete' : isNew(v) ? 'new' : (v.file?.lastKind ?? 'read')) : undefined
           const right: Seg[] = (v.file?.agents.slice(0, 6) ?? []).map(a => ({ t: '●', c: agentColor(a, byAgent), dim: isDim }))
           if (badge) right.push({ t: ` ${badge}`, c: badgeColor(v), dim: isDim })
           if ((v.file?.conflict?.length ?? 0) > 1) right.push({ t: ' ⚠', c: '#D0453F' })
@@ -3189,6 +3195,7 @@ export const register: Register = (on, options) => {
                   [
                     ['◉', READ_COLOR, s.legend.read],
                     ['✎', WRITE_COLOR, s.legend.write],
+                    ['+', NEW_COLOR, s.legend.isNew],
                     ['✓', COMMIT_COLOR, s.legend.commit],
                     ['✗', DELETE_COLOR, s.legend.delete],
                   ] as const

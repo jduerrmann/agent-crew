@@ -73,7 +73,7 @@ Rules:
 ### Files
 - [client-file-rows](decisions/client-file-rows.md): file rows as a Client like filetree: clickable while shimmering, double click opens
 - [own-search-field](decisions/own-search-field.md): full-width search as a Client; Input always shows a submit button
-- [files-tree-navigation](decisions/files-tree-navigation.md): folders shut but sum up (✎3 ◉1 ●●), filters Activity/Changes/All, breadcrumbs, card with history and diff
+- [files-tree-navigation](decisions/files-tree-navigation.md): folders shut but sum up (✎3 ◉1 ●●), new files blue +, filters Activity/Changes/All, breadcrumbs, card with history and diff
 - [conflict-window](decisions/conflict-window.md): two writers on one file within 10 minutes is a conflict until a commit
 - [git-read-schedule](decisions/git-read-schedule.md): git read 500 ms after changes, every 10 s while open, on ↻; single-flight
 
