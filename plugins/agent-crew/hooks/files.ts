@@ -434,6 +434,21 @@ export function treeRows(entries: { key: string; label: string }[], fold = false
   return rows
 }
 
+/** The keys of the files beneath each folder row, at any depth: what a shut folder holds. */
+export function filesBeneath(rows: TreeRow[]): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  const path: TreeRow[] = []
+  for (const r of rows) {
+    // Rows come depth first: a row at or above a folder's depth has left it.
+    while ((path.at(-1)?.depth ?? -1) >= r.depth) path.pop()
+    if (r.isDir) {
+      out.set(r.key, [])
+      path.push(r)
+    } else for (const d of path) out.get(d.key)?.push(r.key)
+  }
+  return out
+}
+
 /** The entries under `folder` (a tree path such as `src/auth`), labelled relative to it; `''` keeps them all. */
 export function underFolder<V extends { label: string }>(entries: V[], folder: string, fold = false): V[] {
   if (!folder) return entries

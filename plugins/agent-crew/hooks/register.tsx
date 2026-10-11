@@ -6,7 +6,7 @@ import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewPanel, Crew
 import { CLAY, FONT, crab, fitText, svg, textWidth, xml } from './crab'
 import type { FileRowSpec, FileRowsProps, Seg } from './filerows'
 import type { SearchBoxProps } from './searchbox'
-import { applyNumstat, folderKeys, folderOf, inside, isNewer, keyOf, mayChange, openCommand, parseStatus, posix, rawGithubUrl, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
+import { applyNumstat, filesBeneath, folderKeys, folderOf, inside, isNewer, keyOf, mayChange, openCommand, parseStatus, posix, rawGithubUrl, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
 import type { TreeRow } from './files'
 import type { Tab, TabsProps } from './tabs'
 
@@ -61,6 +61,7 @@ const FRESH_MS = 8000
 const READ_COLOR = '#a855f7'
 const WRITE_COLOR = '#f97316'
 const COMMIT_COLOR = '#22c55e'
+const DELETE_COLOR = '#ef4444'
 
 // ---------------------------------------------------------------------------
 // Language: the `language` option, else Claude Code's `language` setting, else
@@ -105,7 +106,7 @@ const STRINGS = {
     files: 'Dateien',
     fileFilters: { activity: 'Aktivität', changed: 'Änderungen', all: 'Alle' },
     noFiles: 'Noch keine Dateien gelesen oder geändert.',
-    legend: { read: 'gelesen', write: 'geändert', commit: 'committet' },
+    legend: { read: 'gelesen', write: 'geändert', commit: 'committet', delete: 'gelöscht' },
     more: (n: number) => `… ${n} weitere`,
     main: 'Hauptchat',
     totalsTitle: 'Kosten',
@@ -184,7 +185,7 @@ const STRINGS = {
     files: 'Files',
     fileFilters: { activity: 'Activity', changed: 'Changes', all: 'All' },
     noFiles: 'No files read or changed yet.',
-    legend: { read: 'read', write: 'changed', commit: 'committed' },
+    legend: { read: 'read', write: 'changed', commit: 'committed', delete: 'deleted' },
     more: (n: number) => `… ${n} more`,
     main: 'main chat',
     totalsTitle: 'Cost',
@@ -1366,8 +1367,12 @@ const UNTOUCHED_COLOR = '#8a8a86'
 
 const isChanged = (v: FileView): boolean => Boolean(v.gitFile || (v.file && (v.file.writes > 0 || v.file.commit)))
 
+/** Gone from the working tree, as git sees it: drawn as a red ✗. */
+const isDeleted = (v: FileView): boolean => Boolean(v.gitFile && !v.gitFile.code.includes('?') && v.gitFile.code.includes('D'))
+
 const fileColor = (v: FileView): string => {
   if (!v.file && !v.gitFile) return UNTOUCHED_COLOR
+  if (isDeleted(v)) return DELETE_COLOR
   if (v.gitFile || v.file?.lastKind === 'write') return WRITE_COLOR
   if (v.file?.commit) return COMMIT_COLOR
   return READ_COLOR
@@ -1376,7 +1381,7 @@ const fileColor = (v: FileView): string => {
 const fileGlyph = (v: FileView): string => {
   if (!v.file && !v.gitFile) return '·'
   if (v.gitFile?.code.includes('?')) return '+'
-  if (v.gitFile?.code.includes('D')) return '−'
+  if (isDeleted(v)) return '✗'
   if (v.gitFile || v.file?.lastKind === 'write') return '✎'
   if (v.file?.commit) return '✓'
   return '◉'
@@ -1389,6 +1394,8 @@ const gitBadge = (v: FileView): string => {
   if (g.code.includes('D')) return tr().isDeleted
   return g.add || g.del ? `+${g.add} −${g.del}` : g.code.trim()
 }
+
+const badgeColor = (v: FileView): string => (isDeleted(v) ? DELETE_COLOR : v.gitFile ? WRITE_COLOR : COMMIT_COLOR)
 
 // The tree's files by its filter: `activity`, what the session's agents read and
 // changed (and what git reports as changed); `changed`, the changes alone;
@@ -1416,17 +1423,51 @@ const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: Cr
 
 const isUntouched = (v: FileView): boolean => !v.file && !v.gitFile
 
+// What a shut folder shows of the files inside it: a count per sign, in the
+// colours of the legend, conflicts after them, then the agents' dots. Untouched
+// files (the All filter's) count for nothing. With an agent in focus, a folder
+// it has no file in goes dim, as its file rows would.
+const FOLDER_SIGNS = [
+  ['✎', WRITE_COLOR],
+  ['+', WRITE_COLOR],
+  ['✗', DELETE_COLOR],
+  ['✓', COMMIT_COLOR],
+  ['◉', READ_COLOR],
+] as const
+
+const folderSummary = (inside: FileView[], byAgent: Map<string, CrewRun>, focus?: string): Seg[] => {
+  const counts = new Map<string, number>()
+  const agents = new Set<string>()
+  let conflicts = 0
+  for (const v of inside) {
+    if (isUntouched(v)) continue
+    const sign = fileGlyph(v)
+    counts.set(sign, (counts.get(sign) ?? 0) + 1)
+    if ((v.file?.conflict?.length ?? 0) > 1) conflicts++
+    for (const a of v.file?.agents ?? []) agents.add(a)
+  }
+  const isDim = Boolean(focus && !agents.has(focus))
+  const out: Seg[] = FOLDER_SIGNS.flatMap(([sign, c]) => (counts.get(sign) ? [{ t: `${sign}${counts.get(sign)} `, c, dim: isDim }] : []))
+  if (conflicts) out.push({ t: `⚠${conflicts} `, c: '#D0453F' })
+  for (const a of [...agents].slice(0, 6)) out.push({ t: '●', c: agentColor(a, byAgent), dim: isDim })
+  // As wide as a file row's ` ▸ `, so the signs stand in line with theirs.
+  if (out.length) out.push({ t: agents.size ? '   ' : '  ' })
+  return out
+}
+
 const MAX_FILE_ROWS = 80
 
 // A Client's props are plain data: a segment carries only the fields it sets.
 const plainSeg = (s: Seg): Seg => Object.fromEntries(Object.entries(s).filter(([, x]) => x !== undefined && x !== false)) as Seg
 
 // The shimmer's tones, after filetree's (Kurt Buhler, MIT): the base colour, then
-// three steps lighter for the band's edge, shoulder and crest.
-const SHIMMER: Record<CrewFile['lastKind'], string[]> = {
+// three steps lighter for the band's edge, shoulder and crest. A deleted file
+// shimmers red, whatever its last touch was.
+const SHIMMER: Record<CrewFile['lastKind'] | 'delete', string[]> = {
   read: ['#a855f7', '#c084fc', '#d8b4fe', '#f3e8ff'],
   write: ['#f97316', '#fb923c', '#fdba74', '#ffedd5'],
   commit: ['#22c55e', '#4ade80', '#86efac', '#dcfce7'],
+  delete: ['#ef4444', '#f87171', '#fca5a5', '#fee2e2'],
 }
 
 // A double press on a file opens it, as in filetree; a single one its card.
@@ -2544,10 +2585,14 @@ export const register: Register = (on, options) => {
     // diff), a double press the file itself; a folder shuts and opens on a press.
     // Where the surface has a Client the rows are drawn on its cell grid, a fresh
     // name shimmering while it still takes presses; elsewhere each row is a Button.
+    // A shut folder sums up the files inside it; an open one leaves that to its rows.
+    const beneath = filesBeneath(treeAll)
+    const folderSigns = (key: string): Seg[] =>
+      shut.has(key) ? folderSummary((beneath.get(key) ?? []).flatMap(k => viewByKey.get(k) ?? []), byAgent, focusRun ? p.focusAgent : undefined) : []
     const fileRowsOf = (rows: TreeRow[], base: number): FileRowSpec[] =>
-      rows.flatMap(r => {
+      rows.flatMap((r): FileRowSpec[] => {
         const indent = '  '.repeat(Math.max(0, r.depth - base))
-        if (r.isDir) return [{ id: r.key, isOpen: !shut.has(r.key), left: [{ t: `${indent}${shut.has(r.key) ? '▸' : '▾'} ${r.name}/`, dim: true }], right: [] }]
+        if (r.isDir) return [{ id: r.key, isOpen: !shut.has(r.key), left: [{ t: `${indent}${shut.has(r.key) ? '▸' : '▾'} ${r.name}/`, dim: true }], right: folderSigns(r.key) }]
         const v = viewByKey.get(r.key)
         if (!v) return []
         const color = fileColor(v)
@@ -2556,9 +2601,9 @@ export const register: Register = (on, options) => {
         const isOpen = p.openFile === v.key
         // Only while the focused agent is listed, and so its ✕ in the header with it.
         const isDim = Boolean(focusRun && p.focusAgent && !(v.file?.agents ?? []).includes(p.focusAgent))
-        const tone = isFresh && !isDim ? (v.file?.lastKind ?? 'read') : undefined
+        const tone = isFresh && !isDim ? (isDeleted(v) ? 'delete' : (v.file?.lastKind ?? 'read')) : undefined
         const right: Seg[] = (v.file?.agents.slice(0, 6) ?? []).map(a => ({ t: '●', c: agentColor(a, byAgent), dim: isDim }))
-        if (badge) right.push({ t: ` ${badge}`, c: v.gitFile ? WRITE_COLOR : COMMIT_COLOR, dim: isDim })
+        if (badge) right.push({ t: ` ${badge}`, c: badgeColor(v), dim: isDim })
         if ((v.file?.conflict?.length ?? 0) > 1) right.push({ t: ' ⚠', c: '#D0453F' })
         right.push({ t: ` ${isOpen ? '▾' : '▸'} `, dim: true })
         return [
@@ -2587,10 +2632,17 @@ export const register: Register = (on, options) => {
     const buttonRow = (r: TreeRow) => {
       if (r.isDir)
         return (
-          <Box key={`f-${r.key}`} marginLeft={r.depth * 2}>
+          <Box key={`f-${r.key}`} flexDirection="row" justifyContent="space-between" gap={1} marginLeft={r.depth * 2}>
             <Button key={`dir-${r.key}`} plain dimColor onPress={() => pressRow($, r.key, !shut.has(r.key))}>
               {shut.has(r.key) ? '▸' : '▾'} {r.name}/
             </Button>
+            <Text>
+              {folderSigns(r.key).map((sg, i) => (
+                <Text key={`ds-${r.key}-${i}`} color={sg.c} dimColor={sg.dim}>
+                  {sg.t}
+                </Text>
+              ))}
+            </Text>
           </Box>
         )
       const v = viewByKey.get(r.key)
@@ -2610,7 +2662,7 @@ export const register: Register = (on, options) => {
                 ●
               </Text>
             ))}
-            {badge ? <Text color={v.gitFile ? WRITE_COLOR : COMMIT_COLOR}> {badge}</Text> : null}
+            {badge ? <Text color={badgeColor(v)}> {badge}</Text> : null}
             {(v.file?.conflict?.length ?? 0) > 1 ? <Text color="red"> ⚠</Text> : null}
           </Text>
         </Box>
@@ -2651,6 +2703,7 @@ export const register: Register = (on, options) => {
                   ['◉', READ_COLOR, s.legend.read],
                   ['✎', WRITE_COLOR, s.legend.write],
                   ['✓', COMMIT_COLOR, s.legend.commit],
+                  ['✗', DELETE_COLOR, s.legend.delete],
                 ] as const
               ).map(([sign, color, label], i) => (
                 <Text key={`lg-${i}`}>

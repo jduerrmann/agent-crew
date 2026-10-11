@@ -65,7 +65,7 @@ Rules:
 ### Files
 - [client-file-rows](decisions/client-file-rows.md): file rows as a Client like filetree: clickable while shimmering, double click opens
 - [own-search-field](decisions/own-search-field.md): full-width search as a Client; Input always shows a submit button
-- [files-tree-navigation](decisions/files-tree-navigation.md): folders shut, filters Activity/Changes/All, breadcrumbs, card with history and diff
+- [files-tree-navigation](decisions/files-tree-navigation.md): folders shut but sum up (✎3 ◉1 ●●), filters Activity/Changes/All, breadcrumbs, card with history and diff
 - [conflict-window](decisions/conflict-window.md): two writers on one file within 10 minutes is a conflict until a commit
 - [git-read-schedule](decisions/git-read-schedule.md): git read 500 ms after changes, every 10 s while open, on ↻; single-flight
 
@@ -85,7 +85,6 @@ Rules:
 Read a plan, the notes it links and the code it points to before starting; check its pointers against the code first.
 
 ### Active, in order
-1. [folder-counters](plans/active/folder-counters.md): shut folders show counts by state (✎3 +1 ⚠1) and the agents' dots, as filetree's (S)
 2. [agent-progress-bar](plans/active/agent-progress-bar.md): the row bar is context fill and jumps to full at the end; show activity and steps instead (S)
 3. [prompt-band](plans/active/prompt-band.md): a band above the prompt with crew status, progress and usage, each line optional; status line switchable (M)
 4. [agent-rows-and-stop](plans/active/agent-rows-and-stop.md): click anywhere on an agent's row; ■ stops a subagent (spike: turn.abort, TaskStop, deny) (M)

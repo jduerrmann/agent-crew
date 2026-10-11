@@ -776,6 +776,64 @@ test('a checkout to another branch books nothing as committed', async ($, on) =>
   expect(JSON.stringify(await ui.drawn())).not.toContain('ccccccc')
 })
 
+// The drawn row with this id, from a rows Client's props.
+async function rowOf(ui: Mounted, id: string): Promise<{ right: { t: string; c?: string }[] } | undefined> {
+  let row: { right: { t: string }[] } | undefined
+  JSON.stringify(await ui.drawn(), (_k, v) => {
+    if (v && typeof v === 'object' && v.id === id && Array.isArray(v.right)) row = v
+    return v
+  })
+  return row
+}
+
+test('a shut folder counts the files inside it by state and shows their agents', async ($, on) => {
+  const { clock } = engine(on)
+  const entry = (name: string, kind: 'file' | 'dir') => ({ name, kind, size: 1, mtimeMs: 0, isLink: false })
+  const listing: Record<string, ReturnType<typeof entry>[]> = { '/work': [entry('src', 'dir')], '/work/src': [entry('app.ts', 'file'), entry('idle.ts', 'file'), entry('util.ts', 'file')] }
+  on('fs.list', (_$, e) => ({ value: listing[(e as { path: string }).path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')] ?? [] }) as never)
+  await start($)
+  await spawn($, 'Umbauen', 'general-purpose')
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'a', new_string: 'b', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/util.ts' } as never)
+  await clock.advance(10_000)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const signs = async () => (await rowOf(ui, 'dir:/src'))?.right.map(s => s.t).join('')
+    expect(await signs()).toBe('✎1 ◉1 ●●   ')
+    // The dots are the two agents': the subagent's colour and the main thread's.
+    expect(new Set((await rowOf(ui, 'dir:/src'))?.right.filter(s => s.t === '●').map(s => s.c)).size).toBe(2)
+    // Every file under the root: the untouched one counts for nothing.
+    await ui.press({ key: 'files-filter-all' })
+    await clock.advance(10)
+    expect(await signs()).toBe('✎1 ◉1 ●●   ')
+    await ui.press({ key: 'files-filter-activity' })
+    // Open, its rows speak for themselves.
+    await clickRow(ui, 'rows-a', 0)
+    expect(await signs()).toBe('')
+    await clock.advance(1000)
+    await clickRow(ui, 'rows-a', 0)
+    await clock.advance(1000)
+  }
+})
+
+test('a deleted file shows as a red ✗, in its row, its folder and the legend', async ($, on) => {
+  const git = fakeGit({ head: 'a'.repeat(40) })
+  const { clock } = engine(on, [], argv =>
+    argv.includes('status') ? { exitCode: 0, stdout: '## main\u0000 D src/old.ts\u0000 M src/app.ts\u0000' } : git(argv),
+  )
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: 'rm src/old.ts' } as never)
+  await clock.advance(10_000)
+  const ui = await mount($, 'terminal')
+  expect((await rowOf(ui, 'dir:/src'))?.right.map(s => s.t).join('')).toBe('✎1 ✗1   ')
+  expect((await rowOf(ui, 'dir:/src'))?.right.find(s => s.t === '✗1 ')?.c).toBe('#ef4444')
+  await expandAll(ui)
+  const row = (await rowOf(ui, '/work/src/old.ts')) as { left: { t: string; c?: string }[]; right: { t: string; c?: string }[] } | undefined
+  expect(row?.left.find(s => s.t === '✗ ')?.c).toBe('#ef4444')
+  expect(row?.right.find(s => s.t === ' gelöscht')?.c).toBe('#ef4444')
+  expect(await ui.find({ text: /gelöscht/ })).toBeDefined()
+})
+
 test('a press shuts a folder a fresh file holds open, and it stays shut', async ($, on) => {
   const { clock } = engine(on)
   await start($)
