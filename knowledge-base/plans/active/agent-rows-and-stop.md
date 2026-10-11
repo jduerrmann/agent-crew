@@ -18,7 +18,7 @@ updated: 2026-10-11
 **Why:** watching many agents, the first thing one wants to do with a wrong one is stop it. And a tiny ▸ is hard to hit.
 
 **Today:**
-- Desktop rows are pictures (`runSvg` in `hooks/register.tsx`) with a separate ▸ Button (`detailsButton`); pictures take no press ([builtin-components-fixed](../../limits/builtin-components-fixed.md)). Terminal rows are text with the same ▸.
+- Desktop rows are pictures (`runSvg` in `hooks/register.tsx`; the desktop reloads them on every redraw, see [svg-redraw-restarts-animation](../../limits/svg-redraw-restarts-animation.md)) with a separate ▸ Button (`detailsButton`); pictures take no press ([builtin-components-fixed](../../limits/builtin-components-fixed.md)). Terminal rows are text with the same ▸.
 - Details (`details(r)`) show task, recent actions, files, answer, *Highlight its files* and *Copy answer*.
 - No stop exists. Open question in the index: can a mod stop a subagent?
 
@@ -28,7 +28,7 @@ updated: 2026-10-11
    - `$.tool.call` can run built-in tools. `TaskStop` stops background tasks; check whether background and workflow agents have a task id the mod can learn (`agent.spawn` result, `$.agent.list()`).
    - Fallback that always works: from the press on, the `tool.call` hook denies every call of that agent with a clear reason ("stopped from agent-crew"). The agent then ends on its own; mark the run `stopped`.
    Record the answer as a limit or decision note.
-2. **Clickable rows:** draw agent rows like the file rows, in a Client ([client-file-rows](../../decisions/client-file-rows.md)), so a click anywhere toggles the details and the crab animation stays. Or, simpler: keep `runSvg` and lay a full-width Button over the row text. Decide after a quick look; the Client route matches the files.
+2. **Clickable rows:** done on the desktop. A `hotspot.tsx` click region lies over each row's picture ([redraw-drops-button-clicks](../../limits/redraw-drops-button-clicks.md)). Left: the terminal rows still open by their ▸ Button only.
 3. **Details:** a small action row at the top: ■ Stop (running only, with a confirm), *Highlight its files*, *Copy answer*; then task, actions, files, answer as today.
 4. ■ also in the compact view? Only if it stays readable.
 

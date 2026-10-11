@@ -105,6 +105,13 @@
       "title": "Open the panel on the first file activity",
       "description": "Opens the panel once per session when a file is first read or changed, as filetree does",
       "default": true
+    },
+    "crabMotion": {
+      "type": "string",
+      "title": "Crab animation",
+      "description": "smooth: on the desktop the panel redraws four times a second while an agent runs, so the crabs walk evenly; light: once a second, and the crabs' step starts over with each redraw",
+      "default": "smooth",
+      "options": ["smooth", "light"]
     }
   },
   "license": "PolyForm-Noncommercial-1.0.0"

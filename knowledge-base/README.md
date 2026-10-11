@@ -25,6 +25,8 @@ Rules:
 - [surface-features-vary](limits/surface-features-vary.md): Svg, Client, Markdown and Input can be missing (VS Code, mobile); feature-test, always a fallback
 - [client-no-blur-event](limits/client-no-blur-event.md): a Client never hears it lost the keys; the hooks module guesses focus from other input
 - [client-posts-per-frame](limits/client-posts-per-frame.md): Client posts arrive once per frame and props trail typing; props must be plain data
+- [redraw-drops-button-clicks](limits/redraw-drops-button-clicks.md): a redraw between press and release loses a Button click; rows and tabs are hotspot.tsx Clients
+- [svg-redraw-restarts-animation](limits/svg-redraw-restarts-animation.md): desktop reloads every Svg per redraw; dots pulse in Clients, crabs walk as a 4/s flip book, bar glides 1 s
 
 ### Host API
 - [onpress-work-dropped](limits/onpress-work-dropped.md): async work started in onPress dies with the press; schedule it with `$.clock.after(1, …)`
@@ -61,6 +63,9 @@ Rules:
 - [settings-tab](decisions/settings-tab.md): `/crew-settings` tab and ⚙ button, written through `$.config.set` like `/config`
 - [cost-is-an-estimate](decisions/cost-is-an-estimate.md): cost marked `≈` from `PRICES`; the cost section is off by default (user)
 - [tokens-new-vs-cached](decisions/tokens-new-vs-cached.md): new = input + output + cache writes, cached reads apart; one sum was misleading
+- [crab-flip-book](decisions/crab-flip-book.md): desktop crabs walk as stills redrawn 4×/s while agents run; `crabMotion` light = 1×/s (user)
+- [agent-bar-estimate](decisions/agent-bar-estimate.md): row bar estimates from time and steps up to 90 %; savvy `step` reports fill it for real; green/red/grey at the end (user)
+- [agent-bar-no-made-up-progress](decisions/agent-bar-no-made-up-progress.md): superseded; a moving band instead of a fill, found too restless
 
 ### Files
 - [client-file-rows](decisions/client-file-rows.md): file rows as a Client like filetree: clickable while shimmering, double click opens
@@ -85,7 +90,6 @@ Rules:
 Read a plan, the notes it links and the code it points to before starting; check its pointers against the code first.
 
 ### Active, in order
-2. [agent-progress-bar](plans/active/agent-progress-bar.md): the row bar is context fill and jumps to full at the end; show activity and steps instead (S)
 3. [prompt-band](plans/active/prompt-band.md): a band above the prompt with crew status, progress and usage, each line optional; status line switchable (M)
 4. [agent-rows-and-stop](plans/active/agent-rows-and-stop.md): click anywhere on an agent's row; ■ stops a subagent (spike: turn.abort, TaskStop, deny) (M)
 5. [burn-rate](plans/active/burn-rate.md): forecast when a limit runs out at the current pace; optional cost limit per agent (M)

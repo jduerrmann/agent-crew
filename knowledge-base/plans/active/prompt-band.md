@@ -4,7 +4,7 @@ area: ui
 status: active
 priority: 3
 effort: M
-depends-on: agent-progress-bar, configurable-sections
+depends-on: agent-bar-estimate, configurable-sections
 created: 2026-10-11
 updated: 2026-10-11
 ---
@@ -27,7 +27,7 @@ updated: 2026-10-11
 1. Spike: draw a one-line band from a `ui.render` hook on `AbovePrompt` on both surfaces; check its width, how often it redraws, and that `next(e)` hides it cleanly. Note what the desktop and the terminal allow ([surface-features-vary](../../limits/surface-features-vary.md)).
 2. Options, all in a new settings group *Above the prompt* (`group: 'band'`):
    - `bandAgents` (default on): `● 3 running · ✓ 5 · ✗ 1`, coloured; hidden when no agent ran this session.
-   - `bandProgress` (default off): one compact line of the running agents, a short bar each in its colour, after [agent-progress-bar](agent-progress-bar.md) settles what a bar means.
+   - `bandProgress` (default off): one compact line of the running agents, a short bar each in its colour, taken from `barOf`, as [agent-bar-estimate](../../decisions/agent-bar-estimate.md) settled what a bar means.
    - `bandUsage` (default off): `ctx 31% · 5h 83% (1h 20m) · week 12%`, coloured by the meter thresholds, respecting `usageContext`/`usageFiveHour`/`usageWeek`.
    - `statusLine` (default on): the existing `$.ui.status` entry, now switchable.
 3. Keep the band to one line per enabled part, at most three, and nothing at all when every part is off or empty.

@@ -8,7 +8,7 @@ Each section can be switched on or off in the settings.
 
 - **Usage:** context fill and the plan's 5-hour and weekly limits with their reset times, and a `/compact` button. Each meter can be hidden on its own. Warnings when a limit passes 80 % and 95 %, and when the context passes 85 %.
 - **Cost** (off by default): main chat and subagents separately, new and cached tokens, and the total. Costs are estimated from the `PRICES` table in `hooks/register.tsx`.
-- **Subagents:** every subagent, whichever way it started (Agent tool, forks, teammates, background and workflow agents, nested agents, and agents only `$.agent.list()` knows), in *Active* and *Finished* tabs. Expanding a row shows the task, recent actions, files and the final answer. *Clear finished* removes finished agents; their cost stays in the totals.
+- **Subagents:** every subagent, whichever way it started (Agent tool, forks, teammates, background and workflow agents, nested agents, and agents only `$.agent.list()` knows), in *Active* and *Finished* tabs. A row's bar is an estimate from run time and model requests while the agent runs, kept short of 90 %. Where a worker reports its steps through savvy-progress's `step` tool, the bar shows those instead. Once the agent ends, the bar is full in green, red or grey. Expanding a row shows the task, recent actions, files and the final answer. *Clear finished* removes finished agents; their cost stays in the totals.
 - **Timeline:** when each agent ran, on one time axis, with long pauses folded.
 - **Files:** a tree of the files read, changed and committed during the session, plus the files git reports as changed. Clicking a file shows its history and its diff against `HEAD`; double-clicking opens it in the system's default app. A search line narrows it; a file just touched shimmers, and its folders open while it does. Folders start collapsed and open on a click; a double-click shows only that folder, and the breadcrumbs under the search (main folder and branch) lead back up. ⊞/⊟ expand or collapse every folder, ↻ reads git again. Filters: *Activity* (default), *Changes*, or *All* files under the root. Two agents changing the same file within ten minutes is marked as a conflict until it is committed.
 
@@ -31,6 +31,7 @@ Reads come from `Read`, `Grep` results and shell readers (`cat`, `head`, `sed`, 
 | `autoOpen` | `true` | Open the pane on the first subagent of a session |
 | `autoOpenFiles` | `true` | Open the pane on the first file read or changed in a session |
 | `language` | `auto` | `auto`, `de` or `en` |
+| `crabMotion` | `smooth` | `smooth`: on the desktop the pane redraws four times a second while an agent runs, so the crabs walk evenly; `light`: once a second, the crabs' step starting over each time |
 | `notifyAgents` | `background` | `off`, `failures`, `background`, `all` |
 | `notifyVia` | `toast` | `toast`, or `system` for the terminal's or system's notification |
 | `limitWarnings` | `true` | Warnings at 80 % and 95 % of a limit and at 85 % context |

@@ -32,6 +32,8 @@ export type CrewRun = {
   cacheTokens?: number
   /** The last thing it did, one line (`Read hooks/files.ts`). */
   lastAction?: string
+  /** Progress the agent reported itself through savvy-progress's `step` tool: steps done of planned, and the one under way. */
+  report?: { done: number; total: number; note?: string }
   /** Its final answer, cut to a few thousand characters. */
   lastAnswer?: string
 }

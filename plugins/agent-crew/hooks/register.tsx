@@ -3,11 +3,12 @@ import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
 import type { CrewUpdate, CrewUsage } from '../types'
 import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewPanel, CrewRun, CrewStatus, CrewTab } from '../types'
-import { CLAY, FONT, crab, fitText, svg, textWidth, xml } from './crab'
+import { CLAY, FLIP_MS, FONT, crab, fitText, svg, textWidth, xml } from './crab'
 import type { FileRowSpec, FileRowsProps, Seg } from './filerows'
 import type { SearchBoxProps } from './searchbox'
 import { applyNumstat, filesBeneath, folderKeys, folderOf, inside, isNewer, keyOf, mayChange, openCommand, parseStatus, posix, rawGithubUrl, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
 import type { TreeRow } from './files'
+import type { HotSeg, HotspotProps } from './hotspot'
 import type { Tab, TabsProps } from './tabs'
 
 // One pane for the session's crew and what it touched. Above: every subagent,
@@ -85,6 +86,7 @@ const STRINGS = {
     failed: 'Fehler',
     stopped: 'gestoppt',
     idle: 'wartet',
+    steps: (n: number) => (n === 1 ? '1 Schritt' : `${n} Schritte`),
     background: 'Hintergrund',
     fork: 'Fork',
     teammate: 'Teammate',
@@ -164,6 +166,7 @@ const STRINGS = {
     failed: 'error',
     stopped: 'stopped',
     idle: 'waiting',
+    steps: (n: number) => (n === 1 ? '1 step' : `${n} steps`),
     background: 'background',
     fork: 'fork',
     teammate: 'teammate',
@@ -237,6 +240,12 @@ let home = ''
 let gitQueued = false
 let gitBusy = false
 let tick = 0
+// The flip book's timer, running only while an agent walks on a desktop pane.
+let flipTimer: { cancel: () => void } | undefined
+let desktopDrawnAt = -Infinity
+// By the `crabMotion` option: `smooth`, a flip book of stills redrawn four times
+// a second; `light`, the crabs' own animation, which each redraw starts over.
+const flipAt = (at: number): number | undefined => (opts.crabMotion === 'light' ? undefined : at)
 const tr = () => STRINGS[lang]
 
 const isGerman = (v: unknown): boolean => typeof v === 'string' && /^(de|german|deutsch)/i.test(v.trim())
@@ -351,6 +360,32 @@ const elapsed = (r: CrewRun, at: number): number => (r.endedAt ?? Math.max(at, r
 const ctxOf = (r: CrewRun): number =>
   r.contextMax ? Math.min(100, Math.round((r.contextTokens / r.contextMax) * 100)) : 0
 
+// The estimate's pace: a third of the way after about a minute or a dozen
+// model requests, the two adding up; it never passes ESTIMATE_CAP.
+const ESTIMATE_SECONDS = 180
+const ESTIMATE_STEPS = 20
+const ESTIMATE_CAP = 0.9
+
+/**
+ * What an agent's bar shows. The engine reports no progress for a subagent, so
+ * a running agent's bar is an estimate from its run time and its model requests:
+ * quick at first, ever slower, short of full until it ends. Steps it reported
+ * through savvy-progress replace the estimate. An ended run's bar is full, in
+ * its end's colour. Context fill is only text beside it.
+ */
+type AgentBar = { share: number; color: string; label: string }
+
+const barOf = (r: CrewRun, at: number): AgentBar => {
+  const rep = r.report?.total ? r.report : undefined
+  const label = rep ? `${rep.done}/${rep.total}${rep.note ? ` · ${rep.note}` : ''}` : ''
+  if (r.status === 'done') return { share: 1, color: '#3B9C5F', label }
+  if (r.status === 'failed') return { share: 1, color: '#D0453F', label }
+  if (r.status === 'stopped') return { share: 1, color: '#9a9a96', label }
+  if (rep) return { share: rep.done / rep.total, color: colorOf(r), label }
+  const work = elapsed(r, at) / 1000 / ESTIMATE_SECONDS + r.steps / ESTIMATE_STEPS
+  return { share: ESTIMATE_CAP * (1 - Math.exp(-work)), color: colorOf(r), label }
+}
+
 const totals = (list: CrewRun[], at: number, gone: { cost: number; tokens: number; cache?: number }) => {
   const cost = list.reduce((s, r) => s + r.costUsd, gone.cost)
   const tokens = list.reduce((s, r) => s + r.tokens, gone.tokens)
@@ -445,6 +480,7 @@ const metaOf = (r: CrewRun, byId: Map<string, CrewRun>): string[] => {
   else if (r.isBackground) meta.push(s.background)
   const parent = r.parentId ? byId.get(r.parentId) : undefined
   if (parent) meta.push(`↳ ${parent.description || typeLabel(parent)}`)
+  if (r.steps) meta.push(s.steps(r.steps))
   if (r.status === 'idle') meta.push(s.idle)
   if (r.status === 'failed') meta.push(s.failed)
   if (r.status === 'stopped') meta.push(s.stopped)
@@ -885,6 +921,22 @@ const queueGit = ($: EngineInterface) => {
   $.clock.after(500, () => void syncGit($).catch(() => undefined))
 }
 
+// savvy-progress's tool through which a worker reports its own steps. The mod
+// only listens: a tool of its own would cost every request tokens.
+const STEP_TOOL = 'mcp__savvy-progress__step'
+
+// A report merges into the last one as savvy-progress merges it: a count left
+// out stays, the note is the current step's and goes with it.
+const stepReport =
+  (input: Loose) =>
+  (prev: CrewRun['report']): CrewRun['report'] => {
+    const num = (x: unknown, keep: number) => (typeof x === 'number' && Number.isFinite(x) ? Math.max(0, Math.round(x)) : keep)
+    const total = num(input.total, prev?.total ?? 0)
+    const done = num(input.done, prev?.done ?? 0)
+    const note = typeof input.note === 'string' ? oneLine(input.note, 80) || undefined : undefined
+    return { done: total ? Math.min(total, done) : done, total, ...(note ? { note } : {}) }
+  }
+
 async function record($: EngineInterface, tool: string, input: Loose, out: Loose | undefined, isOk: boolean, agentId: string | undefined): Promise<void> {
   const agent = agentId ?? 'main'
   const g = await read($, git)
@@ -895,7 +947,13 @@ async function record($: EngineInterface, tool: string, input: Loose, out: Loose
     const at = await $.clock.now()
     await pushLog($, agentId, { at, kind: 'tool', tool: toolName(tool), text, isError: !isOk || undefined })
     const line = `${toolName(tool)}${text ? ' ' + text : ''}`
-    await update($, runs, list => list.map(r => (r.agentId === agentId ? { ...r, lastAction: oneLine(line, 140) } : r)))
+    // A progress report is no action of its own: it fills the bar instead.
+    const report = tool === STEP_TOOL && isOk ? stepReport(input) : undefined
+    await update($, runs, list =>
+      list.map(r =>
+        r.agentId !== agentId ? r : report ? { ...r, report: report(r.report) } : tool === STEP_TOOL ? r : { ...r, lastAction: oneLine(line, 140) },
+      ),
+    )
   }
   if (!isOk) return
 
@@ -1074,7 +1132,7 @@ const kindOf = (e: { fork: boolean; isTeammate?: true; workflow?: unknown }): Cr
 const STATUS_GLYPH: Record<CrewStatus, string> = { running: '●', idle: '○', done: '✓', failed: '✗', stopped: '■' }
 
 const statusMark = (x: number, y: number, status: CrewStatus, color: string): string => {
-  if (status === 'running') return `<circle class="live" cx="${x}" cy="${y}" r="3.5" fill="${color}"/>`
+  if (status === 'running') return `<circle cx="${x}" cy="${y}" r="3.5" fill="${color}"/>`
   if (status === 'idle') return `<circle cx="${x}" cy="${y}" r="3.5" fill="none" stroke="${color}" stroke-width="1.6"/>`
   if (status === 'done') return `<path d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke="#3B9C5F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
   if (status === 'stopped') return `<rect x="${x - 4}" y="${y - 4}" width="8" height="8" rx="1.5" fill="#9a9a96"/>`
@@ -1114,27 +1172,49 @@ const costSvg = (W: number, main: CostPart, subs: CostPart, agents: number): str
 const ROW_H = 76
 const INDENT = 16
 
+// The status mark sits beside the row's picture, not in it: a running agent's
+// dot pulses, and only a Client keeps a pulse through the pane's redraws.
+const MARK_W = 22
+
+const runMarkSvg = (r: CrewRun): string => svg(MARK_W, ROW_H, statusMark(MARK_W - 8, 16, r.status, colorOf(r)), false)
+
 const runSvg = (W: number, r: CrewRun, depth: number, byId: Map<string, CrewRun>, at: number, isViewed: boolean): string => {
   const color = colorOf(r)
   const ctx = ctxOf(r)
   const x0 = depth * INDENT
   const tx = x0 + 42
-  const textW = W - tx - 22
+  // Deep nesting in a narrow pane leaves no room: never a negative width.
+  const textW = Math.max(0, W - tx)
   const stats = `ctx ${ctx}% · ${fmtTokens(r.contextTokens)}  ≈${fmtCost(r.costUsd)}  ${fmtTime(elapsed(r, at))}`
-  const fill = r.status === 'done' ? 1 : ctx / 100
+  const b = barOf(r, at)
+  // The row is drawn anew several times a second while it runs, each time
+  // starting its animations over (svg-redraw-restarts-animation). So the bar
+  // glides from where it stands now towards where it will stand a second on:
+  // each redraw picks the glide up at the right width, and a step's jump shows
+  // as one (names are the run's own, since the rows may share one document).
+  const w = Math.round(textW * b.share)
+  const next = r.status === 'running' ? Math.round(textW * barOf(r, at + 1000).share) : w
+  const id = r.id.replace(/[^A-Za-z0-9]/g, '')
+  const glide =
+    next > w
+      ? `<style>.gr${id}{transform-box:fill-box;transform-origin:left;animation:gr${id} 1s linear forwards}@keyframes gr${id}{from{transform:scaleX(${(w / next).toFixed(4)})}}@media (prefers-reduced-motion: reduce){.gr${id}{animation:none}}</style>`
+      : ''
+  const barBody = `${glide}<rect${glide ? ` class="gr${id}"` : ''} x="${tx}" y="68" width="${Math.max(w, next)}" height="4" rx="2" fill="${b.color}" opacity="${isActive(r) ? 0.75 : 1}"/>`
+  const statsW = textWidth(stats, 11)
+  const reportText = b.label ? `<text class="s" x="${tx}" y="64" font-family="${FONT}" font-size="11">${xml(fitText(b.label, 11, Math.max(0, textW - statsW - 12)))}</text>` : ''
   const tree = depth ? `<path class="tree" d="M${x0 - INDENT / 2} 0V${ROW_H / 2 - 4}h${INDENT / 2 - 2}" fill="none" stroke-width="1.2"/>` : ''
   const last = r.lastAction ? `› ${r.lastAction}` : ''
   return svg(
     W,
     ROW_H,
     `${isViewed ? `<rect x="0" y="2" width="3" height="${ROW_H - 6}" rx="1.5" fill="${color}"/>` : ''}${tree}
-${crab(x0 + (isViewed ? 4 : 0), 14, costumeOf(r), color, r.status === 'stopped', r.status === 'running')}
+${crab(x0 + (isViewed ? 4 : 0), 14, costumeOf(r), color, r.status === 'stopped', r.status === 'running', 1.1, flipAt(at))}
 <text class="t" x="${tx}" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(r.description || typeLabel(r), 13, textW))}</text>
 <text x="${tx}" y="34" font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(fitText(typeLabel(r), 11, textW * 0.4))}</tspan><tspan class="s">  ${xml(fitText(metaOf(r, byId).join('  ·  '), 11, textW * 0.6))}</tspan></text>
 <text class="m" x="${tx}" y="50" font-family="${FONT}" font-size="11">${xml(fitText(last, 11, textW))}</text>
 <text class="s" x="${tx + textW}" y="64" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
-<rect class="k" x="${tx}" y="68" width="${textW}" height="4" rx="2"/><rect x="${tx}" y="68" width="${Math.round(textW * fill)}" height="4" rx="2" fill="${color}" opacity="${r.status === 'done' ? 1 : 0.7}"/>
-${statusMark(W - 8, 16, r.status, color)}`,
+${reportText}
+<rect class="k" x="${tx}" y="68" width="${textW}" height="4" rx="2"/>${barBody}`,
   )
 }
 
@@ -1143,7 +1223,7 @@ const COMPACT_LABEL = 92
 
 // Compact: one labelled row of crabs for the active, one for the finished. The
 // active walk, with a live dot; the finished stand dimmed, a status badge on each.
-const compactSvg = (W: number, active: CrewRun[], done: CrewRun[], t: ReturnType<typeof totals> | null): { source: string; height: number } => {
+const compactSvg = (W: number, active: CrewRun[], done: CrewRun[], t: ReturnType<typeof totals> | null, at?: number): { source: string; height: number } => {
   const s = tr()
   const totalsW = t ? 150 : 0
   const fit = Math.max(1, Math.floor((W - COMPACT_LABEL - totalsW - 24) / 36))
@@ -1156,14 +1236,14 @@ const compactSvg = (W: number, active: CrewRun[], done: CrewRun[], t: ReturnType
         const x = COMPACT_LABEL + i * 36
         const badge = !isDone
           ? r.status === 'running'
-            ? `<circle class="live" cx="${x + 32}" cy="${y + 4}" r="3" fill="${colorOf(r)}"/>`
+            ? `<circle cx="${x + 32}" cy="${y + 4}" r="3" fill="${colorOf(r)}"/>`
             : `<circle cx="${x + 32}" cy="${y + 4}" r="3" fill="none" stroke="${colorOf(r)}" stroke-width="1.4"/>`
           : r.status === 'done'
             ? `<circle cx="${x + 31}" cy="${y + 5}" r="5" fill="#3B9C5F"/><path d="M${x + 28.5} ${y + 5}l1.8 1.8 3.2-3.4" fill="none" stroke="#fff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>`
             : r.status === 'failed'
               ? `<circle cx="${x + 31}" cy="${y + 5}" r="5" fill="#D0453F"/><path d="M${x + 29} ${y + 3}l4 4M${x + 33} ${y + 3}l-4 4" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/>`
               : `<circle cx="${x + 31}" cy="${y + 5}" r="5" fill="#9a9a96"/><rect x="${x + 29.2}" y="${y + 3.2}" width="3.6" height="3.6" fill="#fff"/>`
-        return crab(x, y, costumeOf(r), colorOf(r), isDone, r.status === 'running') + badge
+        return crab(x, y, costumeOf(r), colorOf(r), isDone, r.status === 'running', 1.1, at === undefined ? undefined : flipAt(at)) + badge
       })
       .join('')
     const moreX = COMPACT_LABEL + shown.length * 36 + 4
@@ -1248,7 +1328,7 @@ const timelineSvg = (W: number, list: CrewRun[], at: number): { source: string; 
       return (
         `<text class="s" x="0" y="${y + 11}" font-family="${FONT}" font-size="11">${xml(fitText(r.description || typeLabel(r), 11, labelW))}</text>` +
         `<rect class="k" x="${barX}" y="${y + 4}" width="${barW}" height="7" rx="3.5"/>` +
-        `<rect${r.status === 'running' ? ' class="live"' : ''} x="${x}" y="${y + 4}" width="${w}" height="7" rx="3.5" fill="${color}" opacity="${r.status === 'stopped' ? 0.45 : 0.9}"/>`
+        `<rect x="${x}" y="${y + 4}" width="${w}" height="7" rx="3.5" fill="${color}" opacity="${r.status === 'stopped' ? 0.45 : 0.9}"/>`
       )
     })
     .join('')
@@ -1459,6 +1539,7 @@ const MAX_FILE_ROWS = 80
 
 // A Client's props are plain data: a segment carries only the fields it sets.
 const plainSeg = (s: Seg): Seg => Object.fromEntries(Object.entries(s).filter(([, x]) => x !== undefined && x !== false)) as Seg
+const plainHot = (s: HotSeg): HotSeg => Object.fromEntries(Object.entries(s).filter(([, x]) => x !== undefined && x !== false)) as HotSeg
 
 // The shimmer's tones, after filetree's (Kurt Buhler, MIT): the base colour, then
 // three steps lighter for the band's edge, shoulder and crest. A deleted file
@@ -1621,6 +1702,7 @@ const FIELDS: readonly Field[] = [
   { key: 'autoOpen', group: 'view', default: true },
   { key: 'autoOpenFiles', group: 'view', default: true },
   { key: 'language', group: 'view', default: 'auto', choices: ['auto', 'de', 'en'] },
+  { key: 'crabMotion', group: 'view', default: 'smooth', choices: ['smooth', 'light'] },
   { key: 'notifyAgents', group: 'notify', default: 'background', choices: ['off', 'failures', 'background', 'all'] },
   { key: 'notifyVia', group: 'notify', default: 'toast', choices: ['toast', 'system'] },
   { key: 'limitWarnings', group: 'notify', default: true },
@@ -1659,6 +1741,7 @@ const FIELD_TEXT = {
       autoOpen: ['Bei Subagenten öffnen', 'Das Panel öffnet sich, wenn der erste Subagent einer Session startet'],
       autoOpenFiles: ['Bei Dateiaktivität öffnen', 'Das Panel öffnet sich, wenn in einer Session zum ersten Mal eine Datei gelesen oder geändert wird'],
       language: ['Sprache', 'Automatisch folgt der Sprache von Claude Code, dann dem System'],
+      crabMotion: ['Krabben-Animation', 'Flüssig: Das Panel zeichnet auf dem Desktop viermal pro Sekunde neu, solange ein Agent läuft. Sparsam: einmal pro Sekunde, der Schritt der Krabben beginnt dabei jedes Mal von vorn'],
       notifyAgents: ['Agent fertig', 'Wann eine Meldung kommt, wenn ein Subagent endet'],
       notifyVia: ['Meldungen als', 'In Claude Code oder als Benachrichtigung von Terminal bzw. System'],
       limitWarnings: ['Limit-Warnungen', 'Bei 80 % und 95 % eines Limits, und bei 85 % Kontext'],
@@ -1669,6 +1752,7 @@ const FIELD_TEXT = {
       auto: 'Automatisch', de: 'Deutsch', en: 'English',
       off: 'Aus', failures: 'Nur Fehler', background: 'Hintergrund', all: 'Alle',
       toast: 'In Claude Code', system: 'System',
+      smooth: 'Flüssig', light: 'Sparsam',
     } as Record<string, string>,
   },
   en: {
@@ -1701,6 +1785,7 @@ const FIELD_TEXT = {
       autoOpen: ['Open on subagents', 'The panel opens when the first subagent of a session starts'],
       autoOpenFiles: ['Open on file activity', 'The panel opens when a file is first read or changed in a session'],
       language: ['Language', 'Automatic follows Claude Code’s language, then the system'],
+      crabMotion: ['Crab animation', 'Smooth: on the desktop the panel redraws four times a second while an agent runs. Light: once a second, and the crabs’ step starts over each time'],
       notifyAgents: ['Agent finished', 'When a notice comes as a subagent ends'],
       notifyVia: ['Notices as', 'Inside Claude Code, or as the terminal’s or system’s notification'],
       limitWarnings: ['Limit warnings', 'At 80 % and 95 % of a limit, and at 85 % context'],
@@ -1711,6 +1796,7 @@ const FIELD_TEXT = {
       auto: 'Automatic', de: 'Deutsch', en: 'English',
       off: 'Off', failures: 'Failures only', background: 'Background', all: 'All',
       toast: 'In Claude Code', system: 'System',
+      smooth: 'Smooth', light: 'Light',
     } as Record<string, string>,
   },
 } as const
@@ -1750,6 +1836,15 @@ export const register: Register = (on, options) => {
     fold = (await $.env.get('OS')) === 'Windows_NT'
     useDrives(fold)
     home = posix(((await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '').replace(/[\\/]+$/, ''))
+    // A new session starts the flip book afresh: a timer of an earlier one in
+    // this module would otherwise stand in for one that runs.
+    try {
+      flipTimer?.cancel()
+    } catch {
+      // Gone with its session already.
+    }
+    flipTimer = undefined
+    desktopDrawnAt = -Infinity
     await $.command.register({
       name: 'crew',
       description: 'Show or hide the crew panel: every subagent of this session, and the files read, changed and committed',
@@ -1772,6 +1867,15 @@ export const register: Register = (on, options) => {
         const counts = tick % 30 === 0 && (await read($, usage)).limits.some(l => l.resetsAt)
         const isOpen = (tick % 10 === 0 || counts) && (await $.ui.panes()).some(p => p.id === PANE)
         if (list.some(r => r.status === 'running') || fresh || (counts && isOpen)) await update($, now, () => at)
+        // While an agent runs, the pane redraws a few times a second: the crabs'
+        // walk is a flip book of stills, one per redraw (CRAB_CSS in crab.ts).
+        // Only where the crabs are pictures: the desktop pane, drawn of late.
+        const isWalking = list.some(r => r.status === 'running') && at - desktopDrawnAt < 5_000 && flipAt(at) !== undefined
+        if (isWalking && !flipTimer) flipTimer = $.clock.every(FLIP_MS, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
+        if (!isWalking && flipTimer) {
+          flipTimer.cancel()
+          flipTimer = undefined
+        }
         if (list.some(isActive) && tick % 3 === 0) await reconcile($)
         if (tick % 10 === 0 && isOpen) await syncGit($)
         // Every hour a look whether a day has passed since the last update check.
@@ -2099,6 +2203,18 @@ export const register: Register = (on, options) => {
       if (tab === 'active' || tab === 'done') await setPanel($, () => ({ tab }))
       return {}
     }
+    // The desktop's click regions (hotspot.tsx): a tab, or an agent's row.
+    const press = (e.data as { press?: unknown }).press
+    if (e.element.startsWith('tabhit-') && (press === 'active' || press === 'done')) {
+      await blurSearch($)
+      await setPanel($, () => ({ tab: press }))
+      return {}
+    }
+    if (e.element.startsWith('rowhit-') && typeof press === 'string') {
+      await blurSearch($)
+      await setPanel($, q => ({ expanded: q.expanded.includes(press) ? q.expanded.filter(x => x !== press) : [...q.expanded, press].slice(-20) }))
+      return {}
+    }
     if (e.element === 'search') {
       const data = e.data as { query?: unknown; submit?: unknown; focus?: unknown }
       if (data.focus === true && !(await readPanel($)).isSearchFocused) await setPanel($, () => ({ isSearchFocused: true }))
@@ -2129,7 +2245,11 @@ export const register: Register = (on, options) => {
     const gone = await read($, cleared)
     const fileList = await read($, files)
     const g = await read($, git)
-    const at = Math.max(await read($, now), ...list.map(r => r.startedAt), 0)
+    // Reading `now` redraws the pane: each second, and four times a second while
+    // a crab walks on the desktop (flipTimer). The time itself is the clock's,
+    // since a step redraws it in between too, and a crab or a gliding bar set by
+    // the last tick would jump back by the part of it gone since.
+    const at = Math.max(await read($, now), await $.clock.now(), ...list.map(r => r.startedAt), 0)
     const viewed = e.props.view?.agentId
     const byAgent = new Map(list.filter(r => r.agentId).map(r => [r.agentId ?? '', r]))
     const base = g?.root ?? posix(await $.session.cwd())
@@ -2181,14 +2301,28 @@ export const register: Register = (on, options) => {
       { id: 'done', icon: '✓', label: s.finished, count: doneCount, color: COMMIT_COLOR },
     ]
     // The desktop sets text in a proportional face, so box-drawing art cannot
-    // line up there: its tabs are bordered Boxes the app draws itself.
+    // line up there: its tabs are bordered Boxes the app draws itself. Inside,
+    // a Client takes the press, so a click lands while the crabs' flip book
+    // redraws the pane; and while an agent runs, the Active tab's dot pulses.
+    const isAnyRunning = list.some(r => r.status === 'running')
     const boxTabs = (
       <Box key="tab-row" flexDirection="row" alignItems="flex-end">
         {tabSpecs.map(t => {
           const isOn = p.tab === t.id
+          const line: HotspotProps['line'] = [
+            { t: t.icon, c: isOn ? t.color : undefined, dim: !isOn, pulse: t.id === 'active' && isAnyRunning },
+            { t: ' ' },
+            { t: t.label, b: isOn, dim: !isOn },
+            { t: ' ' },
+            { t: String(t.count), c: isOn ? t.color : undefined, dim: true },
+          ]
+          // The pulse needs a colour, also on the tab not chosen.
+          if (line[0] && line[0].pulse) line[0].c = t.color
           return (
             <Box
               key={`tabbox-${t.id}`}
+              flexDirection="row"
+              alignItems="center"
               borderStyle="round"
               borderColor={isOn ? t.color : '#6b6b68'}
               borderDimColor={!isOn}
@@ -2196,17 +2330,21 @@ export const register: Register = (on, options) => {
               marginRight={1}
               hover={{ borderColor: isOn ? t.color : '#9a9a96' }}
             >
-              <Button key={`tab-${t.id}`} plain onPress={() => setPanel($, () => ({ tab: t.id as CrewTab }))}>
-                <Text color={isOn ? t.color : undefined} dimColor={!isOn}>
-                  {t.icon}
-                </Text>{' '}
-                <Text bold={isOn} dimColor={!isOn}>
-                  {t.label}
-                </Text>{' '}
-                <Text color={isOn ? t.color : undefined} dimColor>
-                  {String(t.count)}
-                </Text>
-              </Button>
+              {Client ? (
+                <Client key={`tabhit-${t.id}`} module="./hotspot.tsx" props={{ id: t.id, line: line.map(plainHot) } satisfies HotspotProps} />
+              ) : (
+                <Button key={`tab-${t.id}`} plain onPress={() => setPanel($, () => ({ tab: t.id as CrewTab }))}>
+                  <Text color={isOn ? t.color : undefined} dimColor={!isOn}>
+                    {t.icon}
+                  </Text>{' '}
+                  <Text bold={isOn} dimColor={!isOn}>
+                    {t.label}
+                  </Text>{' '}
+                  <Text color={isOn ? t.color : undefined} dimColor>
+                    {String(t.count)}
+                  </Text>
+                </Button>
+              )}
             </Box>
           )
         })}
@@ -2731,6 +2869,7 @@ export const register: Register = (on, options) => {
 
     if (isDesktop && 'Svg' in ui) {
       const { Svg } = ui
+      desktopDrawnAt = at
       const W = desktopW
       // The row's picture leaves room at its right for the Details button. An
       // expanded agent and its details share a card framed in the agent's colour,
@@ -2739,15 +2878,46 @@ export const register: Register = (on, options) => {
       const row = ({ run, depth }: { run: CrewRun; depth: number }) => {
         const isOpen = p.expanded.includes(run.id)
         const w = isOpen ? runW - FRAME_COLS * 8 - depth * 16 : runW
+        const d = isOpen ? 0 : depth
+        // The status mark beside the picture: a running agent's dot pulses in a
+        // Client, any other mark is a still picture.
+        const mark =
+          run.status === 'running' && Client ? (
+            <Box key={`mark-${run.id}`} flexShrink={0} width={3} justifyContent="center">
+              <Client key={`pulse-${run.id}`} module="./hotspot.tsx" props={{ line: [{ t: '●', c: colorOf(run), pulse: true }] } satisfies HotspotProps} />
+            </Box>
+          ) : (
+            <Box key={`mark-${run.id}`} flexShrink={0}>
+              <Svg source={runMarkSvg(run)} alt={STATUS_GLYPH[run.status]} width={MARK_W} height={ROW_H} />
+            </Box>
+          )
+        // A click anywhere on the row opens or shuts its details: a Client laid
+        // over the picture takes it on the press, so it lands while the pane
+        // redraws for the crabs' walk, and it draws the ▸ itself.
+        const hit = Client ? (
+          <Box key={`hitbox-${run.id}`} position="absolute" top={0} left={0} right={0} bottom={0}>
+            <Client
+              key={`rowhit-${run.id}`}
+              module="./hotspot.tsx"
+              width="100%"
+              height="100%"
+              props={{ id: run.id, line: [{ t: `${isOpen ? '▾' : '▸'} `, dim: true }], isRight: true, hoverBg: '#3a3a3826' } satisfies HotspotProps}
+            />
+          </Box>
+        ) : null
         const line = (
           <Box flexDirection="row" alignItems="flex-start" justifyContent="space-between">
-            <Svg
-              source={runSvg(w, run, isOpen ? 0 : depth, byAgent, at, run.agentId !== undefined && run.agentId === viewed)}
-              alt={`${run.description || typeLabel(run)}: ${typeLabel(run)}, ${modelName(run.model)}, ${isActive(run) ? s.isRunning : s.isFinished}`}
-              width={w}
-              height={ROW_H}
-            />
-            {detailsButton(run)}
+            <Box flexDirection="row" alignItems="flex-start">
+              <Svg
+                source={runSvg(w - MARK_W, run, d, byAgent, at, run.agentId !== undefined && run.agentId === viewed)}
+                alt={`${run.description || typeLabel(run)}: ${typeLabel(run)}, ${modelName(run.model)}, ${isActive(run) ? s.isRunning : s.isFinished}`}
+                width={w - MARK_W}
+                height={ROW_H}
+              />
+              {mark}
+            </Box>
+            {hit ? <Box key={`hitroom-${run.id}`} width={3} /> : detailsButton(run)}
+            {hit}
           </Box>
         )
         return isOpen ? (
@@ -2764,7 +2934,7 @@ export const register: Register = (on, options) => {
       const timeline = showTimeline && p.isTimelineOpen ? timelineSvg(W, list, at) : null
 
       // Compact folds the agents' frame alone: a row of crabs each for active and finished.
-      const compact = compactSvg(W, list.filter(isActive), list.filter(r => !isActive(r)), null)
+      const compact = compactSvg(W, list.filter(isActive), list.filter(r => !isActive(r)), null, at)
       const agentsCompact = (
         <Box key="sec-agents" {...FRAME}>
           <Box flexDirection="row" justifyContent="flex-end" alignItems="center">
@@ -2834,13 +3004,18 @@ export const register: Register = (on, options) => {
     const cols = Math.max(24, (e.props.bodyColumns || 40) - FRAME_COLS)
     const costBarW = Math.max(6, cols - 2)
     const barW = Math.max(6, Math.min(20, cols - 34))
-    const bar = (pct: number) => {
-      const filled = Math.round((barW * pct) / 100)
-      return '█'.repeat(filled) + '░'.repeat(Math.max(0, barW - filled))
+    // In eighths of a cell, so a slow estimate visibly grows between redraws.
+    const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
+    const bar = (b: AgentBar) => {
+      const eighths = Math.round(barW * 8 * Math.min(1, b.share))
+      const full = Math.floor(eighths / 8)
+      const part = EIGHTHS[eighths % 8] ?? ''
+      return '█'.repeat(full) + part + '░'.repeat(Math.max(0, barW - full - (part ? 1 : 0)))
     }
     const row = ({ run, depth }: { run: CrewRun; depth: number }) => {
       const color = colorOf(run)
       const ctx = ctxOf(run)
+      const agentBar = barOf(run, at)
       const isOpen = p.expanded.includes(run.id)
       // Inside its card an expanded agent takes its indent from the card.
       const pad = isOpen ? '' : '  '.repeat(depth)
@@ -2875,7 +3050,8 @@ export const register: Register = (on, options) => {
           <Text wrap="truncate-end">
             {pad}
             {'  '}
-            <Text color={color}>{bar(run.status === 'done' ? 100 : ctx)}</Text>
+            <Text color={agentBar.color}>{bar(agentBar)}</Text>
+            {agentBar.label ? <Text> {agentBar.label}</Text> : null}
             <Text dimColor>
               {' '}
               ctx {ctx}% · {fmtTokens(run.contextTokens)} ≈{fmtCost(run.costUsd)} {fmtTime(elapsed(run, at))}

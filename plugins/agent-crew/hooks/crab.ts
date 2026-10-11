@@ -26,9 +26,6 @@ export const fitText = (s: string, size: number, maxW: number): string => {
 const PANE_CSS = `<style>
 .t{fill:#1f1f1f}.s{fill:#6b6b68}.m{fill:#9a9a96}.k{fill:#ecebe8}.ln{stroke:#e4e4e1}.tile{fill:#f4f3f0}.tree{stroke:#d6d5d1}
 @media (prefers-color-scheme: dark){.t{fill:#ececec}.s{fill:#a8a8a4}.m{fill:#7d7d79}.k{fill:#2c2c2b}.ln{stroke:#333331}.tile{fill:#262625}.tree{stroke:#454543}}
-.live{animation:p 1.6s ease-in-out infinite}@keyframes p{50%{opacity:.3}}
-.fresh{animation:fr 1s ease-in-out infinite}@keyframes fr{50%{opacity:.45}}
-@media (prefers-reduced-motion: reduce){.live,.fresh{animation:none}}
 </style>`
 
 // Pixel Clawd: a 24×18 crab on a 30×28 grid, one costume per kind of agent.
@@ -52,31 +49,35 @@ const crabBody = (f: Fill, armFront = 0, armCls?: string): void => {
   f(21, 22, 2, 4, CLAY, 'lb')
 }
 
-// Pure CSS, run by the compositor. Periods divide one second, so the once-a-second
-// redraw of a running row restarts them in phase.
+// Pure CSS. Each delay counts back from `--t`, the time a drawing stands for:
+// the desktop rebuilds a picture on every redraw of the pane, which would cut a
+// running animation off, so a crab drawn with `t` is a still of its walk at that
+// moment (`.flip` pauses it there), and the pane redraws a few times a second
+// while one walks: a flip book. Periods divide one second, and none is shorter
+// than the half second the redraws sample twice.
 const CRAB_CSS = `<style>
-.run .la{animation:st .5s steps(1) infinite}.run .lb{animation:st .5s steps(1) infinite -.25s}
-.run .bd{animation:bob .5s steps(1) infinite -.125s}
+.run .la{animation:st .5s steps(1) infinite calc(0s - var(--t,0s))}.run .lb{animation:st .5s steps(1) infinite calc(-.25s - var(--t,0s))}
+.run .bd{animation:bob .5s steps(1) infinite calc(-.125s - var(--t,0s))}
 .run g{transform-box:fill-box}
 @keyframes st{50%{transform:translateY(-1px)}}@keyframes bob{50%{transform:translateY(1px)}}
-.c-fable.run{animation:float 1s ease-in-out infinite}
+.c-fable.run{animation:float 1s ease-in-out infinite calc(0s - var(--t,0s))}
 .c-fable.run .la,.c-fable.run .lb,.c-fable.run .bd{animation:none}
-.c-fable.run .ant{animation:blink 1s steps(1) infinite}
-.c-fable.run .star{animation:blink .5s steps(1) infinite -.25s}
+.c-fable.run .ant{animation:blink 1s steps(1) infinite calc(0s - var(--t,0s))}
+.c-fable.run .star{animation:blink .5s steps(1) infinite calc(-.25s - var(--t,0s))}
 @keyframes float{50%{transform:translateY(-2px)}}@keyframes blink{50%{opacity:.15}}
-.c-heavy.run .it{animation:scan 1s steps(1) infinite}
-.c-heavy.run .gl{animation:blink 1s steps(1) infinite -.5s}
+.c-heavy.run .it{animation:scan 1s steps(1) infinite calc(0s - var(--t,0s))}
+.c-heavy.run .gl{animation:blink 1s steps(1) infinite calc(-.5s - var(--t,0s))}
 @keyframes scan{25%{transform:translate(-1px,1px)}50%{transform:translate(-2px,2px)}75%{transform:translate(-1px,1px)}}
-.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite}
+.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite calc(0s - var(--t,0s))}
 @keyframes twist{50%{transform:rotate(-35deg)}}
-.c-medium.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite}
-.c-medium.run .egg{animation:flip 1s ease-in-out infinite}
+.c-medium.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite calc(0s - var(--t,0s))}
+.c-medium.run .egg{animation:flip 1s ease-in-out infinite calc(0s - var(--t,0s))}
 @keyframes tilt{20%,40%{transform:rotate(-12deg)}}@keyframes flip{30%{transform:translateY(-5px) scaleY(-1)}60%{transform:translateY(0)}}
-.c-light.run .la{animation-duration:.25s}.c-light.run .lb{animation-duration:.25s;animation-delay:-.125s}
-.c-light.run .flag{transform-origin:0 50%;animation:wave .25s steps(1) infinite}
+.c-light.run .flag{transform-origin:0 50%;animation:wave .5s steps(1) infinite calc(0s - var(--t,0s))}
 @keyframes wave{50%{transform:skewY(-12deg) scaleX(.85)}}
-.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite}
+.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite calc(0s - var(--t,0s))}
 @keyframes fence{50%{transform:rotate(25deg)}}
+.flip,.flip *{animation-play-state:paused!important}
 @media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}
 </style>`
 
@@ -131,7 +132,11 @@ const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
   },
 }
 
-export const crab = (x: number, y: number, costume: string, color: string, dim = false, isWalking = false, scale = 1.1): string => {
+/** One step of the flip book: the pane redraws a walking crab this often. */
+export const FLIP_MS = 250
+
+// `t`, the clock's time in ms: a still of the walk at that moment (CRAB_CSS).
+export const crab = (x: number, y: number, costume: string, color: string, dim = false, isWalking = false, scale = 1.1, t?: number): string => {
   const groups = new Map<string, string[]>([['bd', []]])
   const f: Fill = (cx, cy, w, h, c, cls = 'bd') => {
     if (!groups.has(cls)) groups.set(cls, [])
@@ -141,7 +146,10 @@ export const crab = (x: number, y: number, costume: string, color: string, dim =
   const group = (cls: string) => `<g class="${cls}">${(groups.get(cls) ?? []).join('')}</g>`
   const props = [...groups.keys()].filter(k => k !== 'bd' && k !== 'la' && k !== 'lb')
   const body = `<g class="bd">${(groups.get('bd') ?? []).join('')}${props.map(group).join('')}</g>`
-  return `<g transform="translate(${x},${y}) scale(${scale})" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="c-${costume}${isWalking ? ' run' : ''}">${body}${group('la')}${group('lb')}</g></g>`
+  const isStill = isWalking && t !== undefined
+  const classes = [`c-${costume}`, ...(isWalking ? ['run'] : []), ...(isStill ? ['flip'] : [])].join(' ')
+  const style = isStill ? ` style="--t:${((t % 1000) / 1000).toFixed(3)}s"` : ''
+  return `<g transform="translate(${x},${y}) scale(${scale})" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="${classes}"${style}>${body}${group('la')}${group('lb')}</g></g>`
 }
 
 export const svg = (W: number, H: number, body: string, withCrabs = true): string =>

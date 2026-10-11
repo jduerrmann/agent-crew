@@ -63,6 +63,20 @@ const expandAll = async (ui: Mounted) => {
 }
 const hasRow = async (ui: Mounted, id: string) => JSON.stringify(await ui.drawn()).includes(`"id":"${id}"`)
 
+// An agent's row and the tabs: Buttons in the terminal; on the desktop, click
+// regions (hotspot.tsx) that take the press itself.
+type Surface = (typeof SURFACES)[number]
+const hasRun = async (ui: Mounted, id: string) => {
+  const drawn = JSON.stringify(await ui.drawn())
+  return drawn.includes(`"key":"d-${id}"`) || drawn.includes(`"key":"rowhit-${id}"`)
+}
+const openRun = (ui: Mounted, surface: Surface, id: string) =>
+  surface === 'desktop' ? ui.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: `rowhit-${id}` }) : ui.press({ key: `d-${id}` })
+const showTab = (ui: Mounted, surface: Surface, tab: 'active' | 'done') =>
+  surface === 'desktop'
+    ? ui.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: `tabhit-${tab}` })
+    : ui.pointer({ type: 'down', x: tab === 'done' ? 16 : 2, y: 1, button: 'left', in: 'tabs' })
+
 test('records every spawn, not only savvy ones, and splits them into tabs', async ($, on) => {
   const { opened, status } = engine(on)
   await start($)
@@ -77,16 +91,14 @@ test('records every spawn, not only savvy ones, and splits them into tabs', asyn
 
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    const tabs = surface === 'desktop' ? 'tab-done' : 'tabs'
+    const tabs = surface === 'desktop' ? 'tabhit-done' : 'tabs'
     expect(await ui.find({ key: tabs })).toBeDefined()
-    expect(await ui.find({ key: 'd-a2' })).toBeDefined()
-    expect(await ui.find({ key: 'd-a1' })).toBeUndefined()
-    if (surface === 'desktop') await ui.press({ key: 'tab-done' })
-    else await ui.pointer({ type: 'down', x: 16, y: 1, button: 'left', in: 'tabs' })
-    expect(await ui.find({ key: 'd-a1' })).toBeDefined()
+    expect(await hasRun(ui, 'a2')).toBe(true)
+    expect(await hasRun(ui, 'a1')).toBe(false)
+    await showTab(ui, surface, 'done')
+    expect(await hasRun(ui, 'a1')).toBe(true)
     expect(await ui.find({ key: 'clear' })).toBeDefined()
-    if (surface === 'desktop') await ui.press({ key: 'tab-active' })
-    else await ui.pointer({ type: 'down', x: 2, y: 1, button: 'left', in: 'tabs' })
+    await showTab(ui, surface, 'active')
   }
 })
 
@@ -99,11 +111,11 @@ test('details show what a subagent did last, and the files it touched', async ($
 
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    await ui.press({ key: 'd-a1' })
+    await openRun(ui, surface, 'a1')
     expect(await ui.find({ text: /Read/ })).toBeDefined()
     expect(await ui.find({ text: /README\.md/ })).toBeDefined()
     expect(await ui.find({ key: 'files-toggle' })).toBeDefined()
-    await ui.press({ key: 'd-a1' })
+    await openRun(ui, surface, 'a1')
   }
 })
 
@@ -227,11 +239,11 @@ test('compact folds the agents alone; usage and files stay', async ($, on) => {
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     await ui.press({ key: 'compact' })
-    expect(await ui.find({ key: 'd-a1' })).toBeUndefined()
+    expect(await hasRun(ui, 'a1')).toBe(false)
     expect(await ui.find({ key: 'files-toggle' })).toBeDefined()
     expect(await ui.find({ key: 'run-compact' })).toBeDefined()
     await ui.press({ key: 'compact' })
-    expect(await ui.find({ key: 'd-a1' })).toBeDefined()
+    expect(await hasRun(ui, 'a1')).toBe(true)
   }
 })
 
@@ -335,8 +347,8 @@ test('cleared agents stay gone when the engine list still holds them', async ($,
   engine(on, [{ id: 'x9', type: 'general-purpose', description: 'Fork aus Skill', status: 'completed' }])
   await start($)
   let ui = await mount($, 'desktop')
-  await ui.press({ key: 'tab-done' })
-  expect(await ui.find({ key: 'd-x9' })).toBeDefined()
+  await showTab(ui, 'desktop', 'done')
+  expect(await hasRun(ui, 'x9')).toBe(true)
   await ui.press({ key: 'clear' })
   await ui.unmount()
   await $.command.run({ command: 'crew', args: '' } as never)
@@ -364,7 +376,7 @@ test('subagents and files can each be hidden', { options: { showAgents: false, s
   await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    expect(await ui.find({ key: 'd-a1' })).toBeUndefined()
+    expect(await hasRun(ui, 'a1')).toBe(false)
     expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
     expect(JSON.stringify(await ui.drawn())).toContain('Kontext')
   }
@@ -609,8 +621,8 @@ test("clearing finished agents lifts a focus on one of them", async ($, on) => {
   await $.tool.call({ tool: 'Read', file_path: '/work/b.ts' } as never)
   await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Fertig.', turnId: 't1' } as never)
   const ui = await mount($, 'desktop')
-  await ui.press({ key: 'tab-done' })
-  await ui.press({ key: 'd-a1' })
+  await showTab(ui, 'desktop', 'done')
+  await openRun(ui, 'desktop', 'a1')
   await ui.press({ key: 'focus-a1' })
   expect(JSON.stringify(await ui.drawn())).toContain('"key":"focus-clear"')
   await ui.press({ key: 'clear' })
@@ -832,6 +844,152 @@ test('a deleted file shows as a red ✗, in its row, its folder and the legend',
   expect(row?.left.find(s => s.t === '✗ ')?.c).toBe('#ef4444')
   expect(row?.right.find(s => s.t === ' gelöscht')?.c).toBe('#ef4444')
   expect(await ui.find({ text: /gelöscht/ })).toBeDefined()
+})
+
+// The model beneath: each request answers with the context `tokens.n` sets.
+function modelSteps(on: On) {
+  const tokens = { n: 0 }
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: { model: 'claude-opus-5-5', input_tokens: tokens.n, output_tokens: 0 } } as never
+  })
+  return tokens
+}
+
+// One model request of a subagent.
+async function step($: Engine, agentId: string) {
+  const s = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1, agentId } as never)
+  for await (const _ of s);
+  return s.result
+}
+
+// The terminal's bar of an agent row: one text of twenty cells, in eighths
+// (the usage meters split theirs in two).
+const barText = async (ui: Mounted) => /"([░█▏▎▍▌▋▊▉]{20})"/.exec(JSON.stringify(await ui.drawn()))?.[1] ?? ''
+// How full it is, in eighths of a cell.
+const eighthsOf = (bar: string) => [...bar].reduce((n, c) => n + (c === '█' ? 8 : Math.max(0, '▏▎▍▌▋▊▉'.indexOf(c) + 1)), 0)
+
+test("an agent's bar estimates: it grows with time and steps, stops short of full, and fills when done", async ($, on) => {
+  const { clock } = engine(on)
+  const tokens = modelSteps(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  // A third of the window: the old bar stood a third full and stayed there.
+  tokens.n = 333_000
+  await step($, 'a1')
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ text: /ctx 33%/ })).toBeDefined()
+  expect(await ui.find({ text: /1 Schritt/ })).toBeDefined()
+  const atStart = eighthsOf(await barText(ui))
+  expect(atStart).toBeLessThan(8 * 3)
+  // A minute on, it has grown.
+  await clock.advance(60_000)
+  const aMinuteOn = eighthsOf(await barText(ui))
+  expect(aMinuteOn).toBeGreaterThan(atStart)
+  // A step more, more still.
+  await step($, 'a1')
+  expect(eighthsOf(await barText(ui))).toBeGreaterThan(aMinuteOn)
+  // However long it runs, it stays short of full until it ends.
+  await clock.advance(300_000)
+  expect(eighthsOf(await barText(ui))).toBeLessThanOrEqual(8 * 18)
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Fertig.', turnId: 't1' } as never)
+  await ui.pointer({ type: 'down', x: 16, y: 1, button: 'left', in: 'tabs' })
+  expect(await barText(ui)).toBe('█'.repeat(20))
+})
+
+test('on the desktop a running estimate glides to where it will stand a second on', async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const desk = await mount($, 'desktop')
+  const scale = Number(/scaleX\(([\d.]+)\)/.exec(JSON.stringify(await desk.drawn()))?.[1])
+  expect(scale).toBeGreaterThan(0)
+  expect(scale).toBeLessThan(1)
+  // Ended, it stands still.
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Fertig.', turnId: 't1' } as never)
+  expect(JSON.stringify(await desk.drawn())).not.toContain('scaleX(')
+})
+
+// The drawn element with this key, as JSON.
+async function drawnPart(ui: Mounted, key: string): Promise<string> {
+  let part: unknown
+  JSON.stringify(await ui.drawn(), (_k, v) => {
+    if (v && typeof v === 'object' && v.props?.key === key) part = v
+    return v
+  })
+  return JSON.stringify(part ?? null)
+}
+
+test('on the desktop a running dot pulses in a Client, in its row and on the Active tab; pictures hold no pulse', async ($, on) => {
+  const { clock } = engine(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const desk = await mount($, 'desktop')
+  // Each picture says what it shows: the desktop draws none with an empty alt.
+  const alts: string[] = []
+  JSON.stringify(await desk.drawn(), (_k, v) => {
+    if (v && typeof v === 'object' && v.type === 'Svg') alts.push(String(v.props?.alt ?? ''))
+    return v
+  })
+  expect(alts.filter(a => !a.trim())).toEqual([])
+  // The desktop reloads pictures on each redraw, which cuts a CSS pulse off: the
+  // dots pulse in Clients, which keep their timer, and no picture tries.
+  const pulses = (part: string) => part.includes('"pulse":true')
+  expect(pulses(await drawnPart(desk, 'row-a1'))).toBe(true)
+  expect(pulses(await drawnPart(desk, 'tabbox-active'))).toBe(true)
+  expect(JSON.stringify(await desk.drawn())).not.toContain('class=\\"live\\"')
+  // The crab is a still of its walk at the clock's time, and the pane redraws it
+  // a quarter second on: a flip book that no reload can cut off.
+  const still = async () => /run flip\\" style=\\"--t:([\d.]+)s/.exec(await drawnPart(desk, 'row-a1'))?.[1]
+  await clock.advance(1000)
+  const first = await still()
+  expect(first).toBeDefined()
+  await clock.advance(250)
+  expect(await still()).not.toBe(first)
+  // A press anywhere on the row opens it, and again shuts it: a click region over
+  // the picture takes it on the press, so it lands between redraws.
+  await openRun(desk, 'desktop', 'a1')
+  expect(await drawnPart(desk, 'row-a1')).toContain('▾')
+  await openRun(desk, 'desktop', 'a1')
+  expect(await drawnPart(desk, 'row-a1')).toContain('▸')
+  // With the keys, Enter does what the press does.
+  await desk.key({ key: 'return', in: 'rowhit-a1' })
+  expect(await drawnPart(desk, 'row-a1')).toContain('▾')
+  await desk.key({ key: 'return', in: 'rowhit-a1' })
+  // Ended, the mark is a still picture, and the tab stops pulsing.
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Fertig.', turnId: 't1' } as never)
+  expect(pulses(await drawnPart(desk, 'tabbox-active'))).toBe(false)
+  await showTab(desk, 'desktop', 'done')
+  expect(pulses(await drawnPart(desk, 'row-a1'))).toBe(false)
+})
+
+test('crabMotion light keeps the crabs on their own animation, without the flip book', { options: { crabMotion: 'light' } }, async ($, on) => {
+  const { clock } = engine(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const desk = await mount($, 'desktop')
+  await clock.advance(1000)
+  const row = await drawnPart(desk, 'row-a1')
+  expect(row).toContain(' run\\"')
+  expect(row).not.toContain('run flip')
+  // No redraw a quarter second on: the pane keeps its once-a-second pace.
+  await clock.advance(250)
+  expect(await drawnPart(desk, 'row-a1')).toBe(row)
+})
+
+test("a worker's reported steps fill its bar for real, with the step under way", async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Umbau Auth', 'general-purpose')
+  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, total: 5, agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/auth.ts', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 3, note: 'Tests schreiben', agentId: 'a1' } as never)
+  const ui = await mount($, 'terminal')
+  expect(await barText(ui)).toBe('█'.repeat(12) + '░'.repeat(8))
+  expect(await ui.find({ text: /3\/5 · Tests schreiben/ })).toBeDefined()
+  // The report is no action: the last one stays the read.
+  expect(await ui.find({ text: /› Read/ })).toBeDefined()
+  const desk = await mount($, 'desktop')
+  expect(JSON.stringify(await desk.drawn())).toContain('3/5 · Tests schreiben')
 })
 
 test('a press shuts a folder a fresh file holds open, and it stays shut', async ($, on) => {

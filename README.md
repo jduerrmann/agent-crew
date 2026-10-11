@@ -101,7 +101,8 @@ The section is off by default. Costs are estimated from token counts and a price
 
 - **Coverage:** Agent-tool subagents of any type, forks, teammates, background agents, workflow agents, and nested agents under their parent.
 - **Tabs:** *Active* and *Finished*. A finished parent stays in *Active* while one of its children is still running.
-- **Rows:** model, effort, the agent's latest action, context fill, estimated cost and run time.
+- **Rows:** model, effort, steps so far, the agent's latest action, context fill, estimated cost and run time.
+- **Bar:** Claude Code reports no progress for subagents, so while an agent runs its bar is an estimate from run time and model requests. It fills quickly at first, then ever more slowly, and stops short of 90 %. A worker that reports its steps through [savvy-progress](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress)'s `step` tool fills the bar for real (`3/5 · writing tests`). Finished agents get a full bar: green when done, red when failed, grey when stopped.
 - **Details:** expanding a row shows the agent's task, its recent tool calls and messages, the files it read and changed, and its final answer. *Highlight its files* dims every other file in the tree.
 - **Notifications** when background or workflow agents finish, and whenever an agent fails or is stopped.
 - **Clear finished** removes finished agents from the list. Their cost remains in the totals.
@@ -168,6 +169,7 @@ Open the settings with `/crew-settings` or the *Settings* button at the top of t
 | `autoOpen` | `true` | Open the pane when the first subagent of a session starts. |
 | `autoOpenFiles` | `true` | Open the pane when a file is first read or changed in a session, as filetree does. Either way the pane opens by itself once a session at most. |
 | `language` | `auto` | `auto`, `de` or `en`. `auto` follows Claude Code's language setting, then the system locale. |
+| `crabMotion` | `smooth` | How the crabs walk on the desktop. `smooth` redraws the pane four times a second while an agent runs, a flip book the desktop can't cut off. `light` redraws once a second, and the crabs' step starts over with each redraw. |
 | `notifyAgents` | `background` | Notify when agents end: `off`, `failures`, `background` (background and workflow agents, and any failure or stop) or `all`. |
 | `notifyVia` | `toast` | `toast` inside Claude Code, or `system` for the terminal's or operating system's notification. |
 | `limitWarnings` | `true` | Warn at 80 % and 95 % of a limit and at 85 % context. |
