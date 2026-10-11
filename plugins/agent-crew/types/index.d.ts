@@ -61,6 +61,8 @@ export type CrewPanel = {
   fileTab?: 'history' | 'changes'
   /** Folders of the file tree opened by a press; every other one is shut. */
   openDirs?: string[]
+  /** When a folder was shut by a press: a file touched before that no longer opens it. */
+  shutAt?: Record<string, number>
   /** The folder the file tree shows (`src/auth`), entered by a double press; absent, the whole tree. */
   fileRoot?: string
   /** What the search line above the file tree holds. */
@@ -109,6 +111,8 @@ export type CrewFile = {
   history?: CrewFileEvent[]
   /** Agents that changed it close together; cleared when it is committed. */
   conflict?: string[]
+  /** Its writes within the conflict window since the last commit, apart from the shown history, which reads push out. */
+  recentWrites?: { at: number; agent: string }[]
 }
 
 export type CrewFileEvent = {

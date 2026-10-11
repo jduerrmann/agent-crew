@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { isNewer } from '../hooks/files'
 import type { Engine } from 'claude-code/testing'
 import type { AgentInfo, On } from 'claude-code'
 
@@ -8,7 +9,9 @@ const PANE_PROPS = { title: 'Crew', isFocused: false, bodyColumns: 60, placement
 // Stands in for the engine beneath the mod: spawns answer with an id per call,
 // the list holds what each test puts there, git is not a repository, UI calls
 // are recorded, every tool call succeeds.
-function engine(on: On, listed: AgentInfo[] = []) {
+// `run` answers the commands the mod runs (git), else "not a git repository".
+type RunAnswer = { exitCode: number; stdout: string; stderr?: string }
+function engine(on: On, listed: AgentInfo[] = [], run?: (argv: string[]) => RunAnswer | undefined) {
   const clock = mock.clock(on)
   mock.env(on, { LANG: 'de_DE.UTF-8' })
   const opened: string[] = []
@@ -20,7 +23,12 @@ function engine(on: On, listed: AgentInfo[] = []) {
   on('session.cwd', () => ({ value: '/work' }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { percent: 31, tokens: 62000, window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 6 }, { kind: 'seven_day', percentUsed: 7 }] } }) as never)
   const runs: string[][] = []
-  on('process.run', (_$, e) => (runs.push([...(e as { argv: string[] }).argv]), { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false } }) as never)
+  on('process.run', (_$, e) => {
+    const argv = [...(e as { argv: string[] }).argv]
+    runs.push(argv)
+    const r = run?.(argv) ?? { exitCode: 128, stdout: '', stderr: 'not a git repository' }
+    return { value: { stderr: '', isStdoutTruncated: false, ...r } } as never
+  })
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `a${++n}` }))
   on('agent.list', () => ({ value: listed }))
   on('ui.open', (_$, e) => (opened.push(e.id), { value: { isPlaced: true as const } }))
@@ -409,6 +417,8 @@ test('a folder shuts and opens on a press', async ($, on) => {
   await start($)
   await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
   await $.tool.call({ tool: 'Read', file_path: '/work/README.md' } as never)
+  // Past the shimmer, while which a touched file's folders stand open.
+  await clock.advance(10_000)
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     // Folders start shut.
@@ -447,6 +457,7 @@ test('a double press enters a folder, the breadcrumbs lead back, ⊞ opens them 
   await $.tool.call({ tool: 'Read', file_path: '/work/src/auth/tokens.ts' } as never)
   await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
   await $.tool.call({ tool: 'Read', file_path: '/work/README.md' } as never)
+  await clock.advance(10_000)
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     // src/ is row 0: two presses close together enter it.
@@ -553,4 +564,229 @@ test('checkUpdates off asks nothing of the network', { options: { checkUpdates: 
   await clock.advance(6_000)
   expect(asked).toBe(0)
   expect(toasts.some(t => t.includes('9.9.9'))).toBe(false)
+})
+
+test('sed -i, find -delete and find -exec count as changes and refresh git; plain readers do not', { options: { autoOpenFiles: false } }, async ($, on) => {
+  const { runs, clock } = engine(on)
+  await start($)
+  await clock.advance(1_000)
+  const gitRuns = () => runs.filter(argv => argv[0] === 'git').length
+  for (const [command, changes] of [
+    ['cat src/app.ts', false],
+    ["sed -i 's/a/b/' src/app.ts", true],
+    ['find . -name "*.tmp" -delete', true],
+    ['find . -name "*.log" -exec rm {} \;', true],
+    ["sed -n '1,5p' src/app.ts", false],
+    ['git branch -m renamed', true],
+    ['git branch --list', false],
+    ['git remote update', true],
+    ['git remote -v', false],
+    ['fd --exec=rm tmp', true],
+  ] as const) {
+    const before = gitRuns()
+    await $.tool.call({ tool: 'Bash', command } as never)
+    await clock.advance(1_000)
+    expect([command, gitRuns() > before]).toEqual([command, changes])
+  }
+})
+
+test('reads between two writes never hide a conflict', async ($, on) => {
+  const { toasts } = engine(on)
+  await start($)
+  await spawn($, 'Erster', 'general-purpose')
+  await spawn($, 'Zweiter', 'general-purpose')
+  await $.tool.call({ tool: 'Edit', file_path: '/work/a.ts', old_string: 'a', new_string: 'b', agentId: 'a1' } as never)
+  for (let i = 0; i < 15; i++) await $.tool.call({ tool: 'Read', file_path: '/work/a.ts' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/work/a.ts', old_string: 'b', new_string: 'c', agentId: 'a2' } as never)
+  expect(toasts.some(t => t.includes('a.ts') && t.includes('Erster') && t.includes('Zweiter'))).toBe(true)
+})
+
+test("clearing finished agents lifts a focus on one of them", async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Erster', 'general-purpose')
+  await $.tool.call({ tool: 'Read', file_path: '/work/a.ts', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/b.ts' } as never)
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Fertig.', turnId: 't1' } as never)
+  const ui = await mount($, 'desktop')
+  await ui.press({ key: 'tab-done' })
+  await ui.press({ key: 'd-a1' })
+  await ui.press({ key: 'focus-a1' })
+  expect(JSON.stringify(await ui.drawn())).toContain('"key":"focus-clear"')
+  await ui.press({ key: 'clear' })
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).not.toContain('"key":"focus-clear"')
+  // Nothing in the tree stays dimmed.
+  expect(drawn).not.toMatch(/"t":"b\.ts"[^}]*"dim":true/)
+})
+
+test('a failed update check is tried again within the hour, not after a day', async ($, on) => {
+  const { clock } = engine(on)
+  mock.store(on)
+  on('fs.read', (_$, e) => ({ value: (e as { path: string }).path.endsWith('plugin.json') ? JSON.stringify({ version: '0.6.0', repository: 'https://github.com/jduerrmann/agent-crew' }) : '' }) as never)
+  let asked = 0
+  on('http.fetch', () => (asked++, asked === 1 ? { value: { status: 503, ok: false, headers: {}, text: 'down' } } : { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: '9.9.9' }) } }) as never)
+  await start($)
+  await clock.advance(6_000)
+  expect(asked).toBe(1)
+  await clock.advance(3_600_000)
+  expect(asked).toBe(2)
+})
+
+test('versions compare as semver does: a release outranks its pre-releases', () => {
+  expect(isNewer('1.0.0', '1.0.0-beta.1')).toBe(true)
+  expect(isNewer('1.0.0-beta.1', '1.0.0')).toBe(false)
+  expect(isNewer('1.0.0-beta.11', '1.0.0-beta.2')).toBe(true)
+  expect(isNewer('0.10.0', '0.9.2')).toBe(true)
+  expect(isNewer('0.7.0+build.5', '0.7.0')).toBe(false)
+})
+
+test('two update checks at once make one request', async ($, on) => {
+  const { clock } = engine(on)
+  mock.store(on)
+  on('fs.read', (_$, e) => ({ value: (e as { path: string }).path.endsWith('plugin.json') ? JSON.stringify({ version: '0.6.0', repository: 'https://github.com/jduerrmann/agent-crew' }) : '' }) as never)
+  // GitHub answers only once both presses are in: the second must join the first.
+  let asked = 0
+  const answers: (() => void)[] = []
+  on('http.fetch', () => {
+    asked++
+    return new Promise(done => answers.push(() => done({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: '9.9.9' }) } }))) as never
+  })
+  await start($)
+  const settings = await $.ui.mount({ plugin: 'agent-crew', surface: 'terminal', component: 'Pane', requestId: 'agent-crew-settings', props: SETTINGS_PROPS })
+  await settings.press({ key: 'update-check' })
+  await clock.advance(5)
+  await settings.press({ key: 'update-check' })
+  await clock.advance(5)
+  expect(asked).toBe(1)
+  for (const answer of answers) answer()
+})
+
+test('a forced update check that meets a lesser one under way runs after it', async ($, on) => {
+  const { clock } = engine(on)
+  mock.store(on)
+  on('fs.read', (_$, e) => ({ value: (e as { path: string }).path.endsWith('plugin.json') ? JSON.stringify({ version: '0.6.0', repository: 'https://github.com/jduerrmann/agent-crew' }) : '' }) as never)
+  let asked = 0
+  const answers: (() => void)[] = []
+  on('http.fetch', () => {
+    asked++
+    return new Promise(done => answers.push(() => done({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: '0.6.0' }) } }))) as never
+  })
+  await start($)
+  // The daily look at the start, held at GitHub; then the button.
+  await clock.advance(6_000)
+  expect(asked).toBe(1)
+  const settings = await $.ui.mount({ plugin: 'agent-crew', surface: 'terminal', component: 'Pane', requestId: 'agent-crew-settings', props: SETTINGS_PROPS })
+  await settings.press({ key: 'update-check' })
+  await clock.advance(5)
+  expect(asked).toBe(1)
+  answers.shift()?.()
+  await clock.advance(5)
+  expect(asked).toBe(2)
+  for (const answer of answers) answer()
+})
+
+test('a commit whose files git cannot list this time is booked on the next look', async ($, on) => {
+  let head = 'a'.repeat(40)
+  let isDiffDown = false
+  const { clock } = engine(on, [], argv => {
+    const git = argv.slice(argv.indexOf('-C') + 2)
+    if (git[0] === 'rev-parse' && git[1] === '--show-cdup') return { exitCode: 0, stdout: '\n' }
+    if (git[0] === 'rev-parse') return { exitCode: 0, stdout: head + '\n' }
+    if (git[0] === 'status') return { exitCode: 0, stdout: '## main\0' }
+    if (git[0] === 'diff' && git[1] === '--name-only') return isDiffDown ? { exitCode: 128, stdout: '', stderr: 'busy' } : { exitCode: 0, stdout: 'src/app.ts\0' }
+    return { exitCode: 0, stdout: '' }
+  })
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await clock.advance(1_000)
+  // A commit, but git cannot list its files this time.
+  head = 'b'.repeat(40)
+  isDiffDown = true
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m x' } as never)
+  await clock.advance(1_000)
+  const ui = await mount($, 'terminal')
+  await expandAll(ui)
+  expect(JSON.stringify(await ui.drawn())).not.toContain('bbbbbbb')
+  // The next look lists them: the commit is booked after all.
+  isDiffDown = false
+  await $.tool.call({ tool: 'Bash', command: 'git status --short && touch x' } as never)
+  await clock.advance(1_000)
+  expect(JSON.stringify(await ui.drawn())).toContain('✓ bbbbbbb')
+})
+
+test('a file just touched shows, shimmering, inside folders that are shut, and they shut again after', async ($, on) => {
+  const { clock } = engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/auth/tokens.ts' } as never)
+  const ui = await mount($, 'terminal')
+  // Its folders open while it shimmers.
+  expect(await hasRow(ui, '/work/src/auth/tokens.ts')).toBe(true)
+  expect(JSON.stringify(await ui.drawn())).toContain('"sh":"read"')
+  // Then they shut again: nobody opened them.
+  await clock.advance(10_000)
+  expect(await hasRow(ui, '/work/src/auth/tokens.ts')).toBe(false)
+})
+
+// A small git for the tests: HEAD, whether rev-parse and merge-base answer, a file list.
+function fakeGit(state: { head: string; isHeadDown?: boolean; isAncestor?: boolean; names?: string }) {
+  return (argv: string[]) => {
+    const git = argv.slice(argv.indexOf('-C') + 2)
+    if (git[0] === 'rev-parse' && git[1] === '--show-cdup') return { exitCode: 0, stdout: '\n' }
+    if (git[0] === 'rev-parse') return state.isHeadDown ? { exitCode: 128, stdout: '', stderr: 'timeout' } : { exitCode: 0, stdout: state.head + '\n' }
+    if (git[0] === 'status') return { exitCode: 0, stdout: '## main\u0000' }
+    if (git[0] === 'merge-base') return state.isAncestor === false ? { exitCode: 1, stdout: '' } : { exitCode: 0, stdout: '' }
+    if (git[0] === 'diff' && git[1] === '--name-only') return { exitCode: 0, stdout: state.names ?? 'src/app.ts\u0000' }
+    if (git[0] === 'ls-tree') return { exitCode: 0, stdout: 'src/app.ts\u0000src/other.ts\u0000README.md\u0000' }
+    return { exitCode: 0, stdout: '' }
+  }
+}
+
+test('a failed rev-parse does not book the whole repository as committed', async ($, on) => {
+  const state = { head: 'a'.repeat(40), isHeadDown: false }
+  const { clock } = engine(on, [], fakeGit(state))
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await clock.advance(1_000)
+  state.isHeadDown = true
+  await $.tool.call({ tool: 'Bash', command: 'touch x' } as never)
+  await clock.advance(1_000)
+  state.isHeadDown = false
+  await $.tool.call({ tool: 'Bash', command: 'touch y' } as never)
+  await clock.advance(1_000)
+  const ui = await mount($, 'terminal')
+  await expandAll(ui)
+  // Nothing from ls-tree: the repository had commits all along.
+  expect(await hasRow(ui, '/work/README.md')).toBe(false)
+  expect(JSON.stringify(await ui.drawn())).not.toContain('✓ aaaaaaa')
+})
+
+test('a checkout to another branch books nothing as committed', async ($, on) => {
+  const state = { head: 'a'.repeat(40), isAncestor: true }
+  const { clock } = engine(on, [], fakeGit(state))
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await clock.advance(1_000)
+  state.head = 'c'.repeat(40)
+  state.isAncestor = false
+  await $.tool.call({ tool: 'Bash', command: 'git checkout other' } as never)
+  await clock.advance(1_000)
+  const ui = await mount($, 'terminal')
+  await expandAll(ui)
+  expect(JSON.stringify(await ui.drawn())).not.toContain('ccccccc')
+})
+
+test('a press shuts a folder a fresh file holds open, and it stays shut', async ($, on) => {
+  const { clock } = engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  const ui = await mount($, 'terminal')
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  await clickRow(ui, 'rows-a', 0)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
+  await clock.advance(10_000)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
+  // New activity in it opens it again for its shimmer.
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
 })

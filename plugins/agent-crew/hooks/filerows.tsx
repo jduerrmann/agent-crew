@@ -6,7 +6,8 @@ import type { ClientModule, RenderElement } from 'claude-code'
 // module, so a row takes presses while it shimmers.
 
 export type Seg = { t: string; c?: string; b?: boolean; dim?: boolean; sh?: string }
-export type FileRowSpec = { id: string; left: Seg[]; right: Seg[] }
+// `isOpen` on a folder: whether it is drawn open, so a press shuts what shows open.
+export type FileRowSpec = { id: string; isOpen?: boolean; left: Seg[]; right: Seg[] }
 export type FileRowsProps = { rows: FileRowSpec[]; tones: Record<string, string[]>; hoverBg: string }
 type Local = { hover: number; phase: number; ref: { stop?: () => void } }
 
@@ -45,7 +46,7 @@ const FileRows: ClientModule<FileRowsProps, Local> = (props, surface) => {
     }
     if (e.type === 'move' && !e.button && cur.hover !== e.y) surface.setState({ ...cur, hover: e.y })
     const row = props.rows[e.y]
-    if (e.type === 'down' && (e.button ?? 'left') === 'left' && row) surface.post({ press: row.id })
+    if (e.type === 'down' && (e.button ?? 'left') === 'left' && row) surface.post(row.isOpen === undefined ? { press: row.id } : { press: row.id, isOpen: row.isOpen })
   })
 
   const draw = (s: Seg, k: string): RenderElement => {

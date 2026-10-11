@@ -45,6 +45,8 @@ let opts: Record<string, unknown> = {}
 
 const MAX_HISTORY = 12
 const MAX_DIFF = 30_000
+/** An untracked file larger than this is not read for its card. */
+const MAX_SOURCE_BYTES = 256 * 1024
 /** Two agents changing one file within this window is a conflict. */
 const CONFLICT_MS = 10 * 60_000
 
@@ -629,11 +631,18 @@ async function touch($: EngineInterface, paths: string[], kind: 'read' | 'write'
       const old: CrewFile = list[i] ?? { key, path, reads: 0, writes: 0, lastAt: at, lastKind: kind, agents: [] }
       const history = [...(old.history ?? []), { at, agent, kind }].slice(-MAX_HISTORY)
       // Several agents changing one file close together: flag it once. A commit
-      // settles what came before it.
+      // settles what came before it. The writes are kept apart from the shown
+      // history, so reads in between never push the first of two writes out.
       let conflict = old.conflict
+      const since = old.commitAt ?? -Infinity
+      // A file from before the writes were kept apart (a reload mid-session) has
+      // them in its history alone: take them from there once.
+      const prior = old.recentWrites ?? (old.history ?? []).filter(h => h.kind === 'write').map(h => ({ at: h.at, agent: h.agent }))
+      const recentWrites = [...prior, ...(kind === 'write' ? [{ at, agent }] : [])]
+        .filter(w => at - w.at < CONFLICT_MS && w.at > since)
+        .slice(-MAX_HISTORY)
       if (kind === 'write') {
-        const since = old.commitAt ?? -Infinity
-        const writers = [...new Set(history.filter(h => h.kind === 'write' && at - h.at < CONFLICT_MS && h.at > since).map(h => h.agent))]
+        const writers = [...new Set(recentWrites.map(w => w.agent))]
         if (writers.length > 1 && writers.some(w => !(old.conflict ?? []).includes(w))) {
           conflict = writers
           conflicts.push({ path, agents: writers })
@@ -648,6 +657,7 @@ async function touch($: EngineInterface, paths: string[], kind: 'read' | 'write'
         agents: old.agents.includes(agent) ? old.agents : [...old.agents, agent],
         history,
         conflict,
+        recentWrites: recentWrites.length ? recentWrites : undefined,
       }
       if (i < 0) list.push(f)
       else list[i] = f
@@ -677,8 +687,12 @@ async function loadDiff($: EngineInterface, key: string): Promise<void> {
     const rel = path.slice(g.root.length).replace(/^\//, '')
     text = (await runGit($, g.root, g.head ? ['diff', 'HEAD', '--no-color', '--', rel] : ['diff', '--no-color', '--', rel])) ?? ''
   } else if (gf?.code.includes('?')) {
+    // An untracked file shows as source: read only one of a sensible size, and
+    // never a binary one, as this runs on every sync while the card is open.
     try {
-      text = await $.fs.read(path)
+      const st = await $.fs.stat(path)
+      const body = st.kind === 'file' && st.size <= MAX_SOURCE_BYTES ? await $.fs.read(path) : ''
+      text = body.includes('\u0000') ? '' : body
       format = 'source'
     } catch {
       text = ''
@@ -690,6 +704,8 @@ async function loadDiff($: EngineInterface, key: string): Promise<void> {
     if (hunk >= 0) text = text.slice(hunk + 1)
   }
   const next = text ? { key, text: text.slice(0, MAX_DIFF), format } : null
+  // Another file opened while git answered: this diff is no longer the card's.
+  if ((await readPanel($)).openFile !== key) return
   if (JSON.stringify(await read($, diff)) !== JSON.stringify(next)) await update($, diff, () => next)
 }
 
@@ -724,8 +740,14 @@ async function syncGit($: EngineInterface): Promise<void> {
       return
     }
     const root = up.trim() ? resolve(cwd, up.trim(), home) : cwd
-    const head = ((await runGit($, root, ['rev-parse', 'HEAD'])) ?? '').trim()
-    const status = parseStatus((await runGit($, root, ['status', '--porcelain=v1', '-b', '-z', '--untracked-files=all'])) ?? '', root)
+    const headOut = await runGit($, root, ['rev-parse', '--verify', '-q', 'HEAD'])
+    const statusOut = await runGit($, root, ['status', '--porcelain=v1', '-b', '-z', '--untracked-files=all'])
+    // A git call that failed (a timeout, a lock) says nothing: keep what was seen
+    // rather than take an empty HEAD for a new repository and book it all as committed.
+    // Only a status that says so makes an empty HEAD a repository with no commits.
+    if (statusOut === null || (headOut === null && !/^## No commits yet/.test(statusOut))) return
+    const head = (headOut ?? '').trim()
+    const status = parseStatus(statusOut, root)
     const numstat = head
       ? await runGit($, root, ['diff', 'HEAD', '--numstat', '-z'])
       : await runGit($, root, ['diff', '--numstat', '-z'])
@@ -736,32 +758,47 @@ async function syncGit($: EngineInterface): Promise<void> {
 
     // Commits since the last look: their files turn green.
     const prev = await read($, git)
-    if (prev && prev.root === root && head && prev.head !== head) {
+    // The HEAD kept for the next look: a commit whose files git could not list
+    // this time stays new, and is booked on the next look instead of never.
+    let seenHead = head
+    // Only a HEAD that grew from the last one was committed to: a checkout, reset or
+    // rebase moves it elsewhere, and its files are not this session's commits.
+    const isCommit =
+      Boolean(prev && prev.root === root && head && prev.head !== head) &&
+      (!prev?.head || (await runGit($, root, ['merge-base', '--is-ancestor', prev.head, head])) !== null)
+    if (prev && isCommit) {
       // After the repository's first commit, everything in its tree is new.
       const names = prev.head
         ? await runGit($, root, ['diff', '--name-only', '-z', prev.head, head])
         : await runGit($, root, ['ls-tree', '-r', '--name-only', '-z', head])
-      const committed = (names ?? '').split('\0').filter(Boolean).slice(0, 200).map(rel => `${root}/${rel}`)
+      if (names === null) seenHead = prev.head
+      const committed = (names ?? '').split('\0').filter(Boolean).map(rel => `${root}/${rel}`)
       if (committed.length) {
         const at = await $.clock.now()
         const sha = head.slice(0, 7)
         await update($, files, list => {
+          // Every file the tree knows takes the commit, however large it is (its
+          // conflict and writes settle); new ones join up to the tree's bound.
           const out = [...(list ?? [])]
+          const index = new Map(out.map((f, i) => [f.key, i]))
+          let room = Math.max(0, MAX_FILES - out.length)
           for (const path of committed) {
             const key = keyOf(path, fold)
-            const i = out.findIndex(f => f.key === key)
+            const i = index.get(key) ?? -1
+            if (i < 0 && room-- <= 0) continue
             const old: CrewFile = out[i] ?? { key, path, reads: 0, writes: 0, lastAt: at, lastKind: 'commit', agents: [] }
             const history = [...(old.history ?? []), { at, agent: 'git', kind: 'commit' as const }].slice(-MAX_HISTORY)
-            const f: CrewFile = { ...old, lastAt: at, lastKind: 'commit', commit: sha, commitAt: at, history, conflict: undefined }
-            if (i < 0) out.push(f)
+            const f: CrewFile = { ...old, lastAt: at, lastKind: 'commit', commit: sha, commitAt: at, history, conflict: undefined, recentWrites: undefined }
+            if (i < 0) index.set(key, out.push(f) - 1)
             else out[i] = f
           }
-          return out
+          // The same bound as a read or write: the newest files stay.
+          return out.length > MAX_FILES ? [...out].sort((a, b) => b.lastAt - a.lastAt).slice(0, MAX_FILES) : out
         })
         await update($, now, () => at)
       }
     }
-    const next: CrewGit = { root, head, ...status, files: byKey }
+    const next: CrewGit = { root, head: seenHead, ...status, files: byKey }
     if (JSON.stringify(prev) !== JSON.stringify(next)) await update($, git, () => next)
     // The open file's diff follows the tree, also when an edit leaves its
     // status and line counts as they were.
@@ -783,9 +820,31 @@ async function syncGit($: EngineInterface): Promise<void> {
 // walk that skips hidden folders and the usual build and dependency ones.
 const MAX_TREE = 4000
 const MAX_WALK_DEPTH = 6
+/** Folders listed in one walk at most, however wide each level grows. */
+const MAX_WALK_DIRS = 300
+let treeBusy = false
+let treeQueued = false
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', 'venv'])
 
 async function syncTree($: EngineInterface): Promise<void> {
+  // One walk at a time; a refresh that comes while one runs is kept for one
+  // more walk after it, so what changed meanwhile is not lost.
+  if (treeBusy) {
+    treeQueued = true
+    return
+  }
+  treeBusy = true
+  try {
+    do {
+      treeQueued = false
+      await walkTree($)
+    } while (treeQueued)
+  } finally {
+    treeBusy = false
+  }
+}
+
+async function walkTree($: EngineInterface): Promise<void> {
   const g = await read($, git)
   const root = g?.root ?? posix(await $.session.cwd())
   let paths: string[] = []
@@ -794,9 +853,11 @@ async function syncTree($: EngineInterface): Promise<void> {
     paths = (out ?? '').split('\0').filter(Boolean).slice(0, MAX_TREE).map(rel => `${root}/${rel}`)
   } else {
     let level = [root]
-    for (let depth = 0; depth < MAX_WALK_DEPTH && level.length && paths.length < MAX_TREE; depth++) {
+    let listed = 0
+    for (let depth = 0; depth < MAX_WALK_DEPTH && level.length && paths.length < MAX_TREE && listed < MAX_WALK_DIRS; depth++) {
       const next: string[] = []
       for (const dir of level) {
+        if (listed++ >= MAX_WALK_DIRS || paths.length >= MAX_TREE) break
         let entries: Awaited<ReturnType<EngineInterface['fs']['list']>> = []
         try {
           entries = await $.fs.list(dir)
@@ -804,7 +865,10 @@ async function syncTree($: EngineInterface): Promise<void> {
           continue
         }
         for (const e of entries) {
-          if (e.kind === 'dir' && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name)) next.push(`${dir}/${e.name}`)
+          if (e.kind === 'dir' && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name)) {
+            // The queue need never hold more than the walk can still list.
+            if (next.length < MAX_WALK_DIRS) next.push(`${dir}/${e.name}`)
+          }
           else if (e.kind === 'file' && paths.length < MAX_TREE) paths.push(`${dir}/${e.name}`)
         }
       }
@@ -881,6 +945,8 @@ async function autoOpenPane($: EngineInterface, cause: 'agents' | 'files'): Prom
 
 const PLUGIN_ID = 'agent-crew@agent-crew'
 const CHECK_EVERY_MS = 24 * 3_600_000
+/** After a failed look (offline, an error, a page that is not a manifest), the next one comes sooner. */
+const RETRY_AFTER_MS = 30 * 60_000
 
 async function manifest($: EngineInterface): Promise<{ version: string; repository: string }> {
   try {
@@ -892,27 +958,57 @@ async function manifest($: EngineInterface): Promise<{ version: string; reposito
 }
 
 // `force`: look now, whatever the day; `isOffline`: only note this copy's version.
-async function checkUpdate($: EngineInterface, force = false, isOffline = false): Promise<void> {
+// One look at a time: a second call (the button again, the hourly tick) waits for
+// the one under way instead of racing it with an older snapshot of the store.
+// A forced look that meets a lesser one under way (offline, or not yet due) does
+// not just wait for it: it runs after it.
+let checkFlight: Promise<void> | undefined
+let isFlightForced = false
+function checkUpdate($: EngineInterface, force = false, isOffline = false): Promise<void> {
+  const isForced = force && !isOffline
+  if (checkFlight && (!isForced || isFlightForced)) return checkFlight
+  const before = checkFlight ?? Promise.resolve()
+  isFlightForced = isForced
+  const flight: Promise<void> = before
+    .catch(() => undefined)
+    .then(() => lookForUpdate($, force, isOffline))
+    .finally(() => {
+      if (checkFlight === flight) {
+        checkFlight = undefined
+        isFlightForced = false
+      }
+    })
+  checkFlight = flight
+  return flight
+}
+
+async function lookForUpdate($: EngineInterface, force: boolean, isOffline: boolean): Promise<void> {
   const own = await manifest($)
   const root = posix($.plugin.root)
   // An installed copy lives in the plugin cache; anything else is a folder of its own.
   const source = /\/\.claude\/plugins\/cache\//i.test(root) ? 'marketplace' : 'folder'
   const prev = await read($, updateInfo)
   const base: CrewUpdate = { current: own.version, source, root, latest: prev?.latest }
-  const saved = (await $.store.get('update')) as { checkedAt?: number; latest?: string; notified?: string } | undefined
+  const saved = (await $.store.get('update')) as { checkedAt?: number; failedAt?: number; latest?: string; notified?: string } | undefined
   const at = await $.clock.now()
   let latest = saved?.latest
-  if (!isOffline && (force || !saved?.checkedAt || at - saved.checkedAt > CHECK_EVERY_MS)) {
+  const isDue = (!saved?.checkedAt || at - saved.checkedAt > CHECK_EVERY_MS) && (!saved?.failedAt || at - saved.failedAt > RETRY_AFTER_MS)
+  if (!isOffline && (force || isDue)) {
     await update($, updateInfo, () => ({ ...base, phase: 'checking' }))
     const url = rawGithubUrl(own.repository, 'plugins/agent-crew/.claude-plugin/plugin.json')
+    let found: string | undefined
     try {
       const r = url ? await $.http.fetch(url) : undefined
       const v = r?.ok ? (JSON.parse(r.text) as { version?: unknown }).version : undefined
-      if (typeof v === 'string') latest = v
+      if (typeof v === 'string' && /^\d+\.\d+/.test(v)) found = v
     } catch {
-      // Offline or refused: keep what was known.
+      // Offline, refused or not a manifest: keep what was known.
     }
-    await $.store.set('update', { ...saved, checkedAt: at, latest })
+    // Only a valid answer counts as the day's look; a failure is tried again within the hour.
+    if (found) {
+      latest = found
+      await $.store.set('update', { ...((await $.store.get('update')) as object), checkedAt: at, failedAt: undefined, latest })
+    } else await $.store.set('update', { ...((await $.store.get('update')) as object), failedAt: at })
   }
   await update($, updateInfo, () => ({ ...base, latest }))
   if (opts.checkUpdates !== false && latest && isNewer(latest, own.version) && saved?.notified !== latest) {
@@ -922,9 +1018,19 @@ async function checkUpdate($: EngineInterface, force = false, isOffline = false)
 }
 
 // `claude plugin update` after the marketplace is fetched again, then a reload.
+let isUpdating = false
 async function runUpdate($: EngineInterface): Promise<void> {
   const cur = await read($, updateInfo)
-  if (!cur || cur.source !== 'marketplace') return
+  if (!cur || cur.source !== 'marketplace' || isUpdating) return
+  isUpdating = true
+  try {
+    await installUpdate($, cur)
+  } finally {
+    isUpdating = false
+  }
+}
+
+async function installUpdate($: EngineInterface, cur: CrewUpdate): Promise<void> {
   await update($, updateInfo, () => ({ ...cur, phase: 'updating', error: undefined }))
   const run = async (argv: string[]) => {
     try {
@@ -1096,7 +1202,7 @@ const TL_GAP_MS = 90_000
 
 // The axis of the timeline: stretches where agents ran, with each longer pause
 // folded into a fixed-width break, so two rounds an hour apart both get bars.
-const timelineAxis = (items: CrewRun[], at: number, width: number, gapW: number) => {
+const timelineAxis = (items: CrewRun[], at: number, width: number, wantGapW: number) => {
   const spans = items.map(r => [r.startedAt, r.endedAt ?? at] as const).sort((a, b) => a[0] - b[0])
   const clusters: { from: number; to: number }[] = []
   for (const [s0, s1] of spans) {
@@ -1105,6 +1211,8 @@ const timelineAxis = (items: CrewRun[], at: number, width: number, gapW: number)
     else clusters.push({ from: s0, to: s1 })
   }
   const busy = Math.max(1000, clusters.reduce((sum, c) => sum + (c.to - c.from), 0))
+  // The breaks together take at most 40 % of the axis: many pauses get narrower ones.
+  const gapW = clusters.length > 1 ? Math.min(wantGapW, (width * 0.4) / (clusters.length - 1)) : wantGapW
   const scale = Math.max(0.0001, (width - gapW * (clusters.length - 1)) / busy)
   const starts: number[] = []
   let x = 0
@@ -1120,7 +1228,7 @@ const timelineAxis = (items: CrewRun[], at: number, width: number, gapW: number)
   }
   // Each break: where it sits, and how long the pause was.
   const breaks = clusters.slice(1).map((c, i) => ({ x: (starts[i + 1] ?? 0) - gapW, pause: c.from - (clusters[i]?.to ?? c.from) }))
-  return { xOf, breaks, total: (clusters.at(-1)?.to ?? at) - (clusters[0]?.from ?? at) }
+  return { xOf, breaks, gapW, total: (clusters.at(-1)?.to ?? at) - (clusters[0]?.from ?? at) }
 }
 
 const timelineSvg = (W: number, list: CrewRun[], at: number): { source: string; height: number } => {
@@ -1147,10 +1255,12 @@ const timelineSvg = (W: number, list: CrewRun[], at: number): { source: string; 
   // A break: two slanted strokes across the rows, the pause written under them.
   const breaks = axis.breaks
     .map(b => {
-      const cx = barX + b.x + GAP_W / 2
+      const cx = barX + b.x + axis.gapW / 2
+      const half = Math.min(4, axis.gapW / 2)
       return (
-        `<path class="tree" d="M${cx - 4} ${items.length * TL_ROW + 2}L${cx - 1} 0M${cx + 1} ${items.length * TL_ROW + 2}L${cx + 4} 0" fill="none" stroke-width="1.2"/>` +
-        `<text class="m" x="${cx}" y="${axisY}" text-anchor="middle" font-family="${FONT}" font-size="9.5">+${fmtTime(b.pause)}</text>`
+        `<path class="tree" d="M${cx - half} ${items.length * TL_ROW + 2}L${cx - half / 4} 0M${cx + half / 4} ${items.length * TL_ROW + 2}L${cx + half} 0" fill="none" stroke-width="1.2"/>` +
+        // The pause's length only where its break leaves the label room.
+        (axis.gapW >= 18 ? `<text class="m" x="${cx}" y="${axisY}" text-anchor="middle" font-family="${FONT}" font-size="9.5">+${fmtTime(b.pause)}</text>` : '')
       )
     })
     .join('')
@@ -1355,12 +1465,12 @@ async function openFirstHit($: EngineInterface, text: string): Promise<void> {
   const g = await read($, git)
   const p = await readPanel($)
   const root = p.fileRoot ?? ''
-  const views = underFolder(fileViews(await read($, files), g, g?.root ?? posix(await $.session.cwd()), p.fileFilter, (await read($, tree))?.paths), root)
-  const hit = treeRows(views.filter(v => v.label.toLowerCase().includes(q)).map(v => ({ key: v.key, label: v.label }))).find(r => !r.isDir)
+  const views = underFolder(fileViews(await read($, files), g, g?.root ?? posix(await $.session.cwd()), p.fileFilter, (await read($, tree))?.paths), root, fold)
+  const hit = treeRows(views.filter(v => v.label.toLowerCase().includes(q)).map(v => ({ key: v.key, label: v.label })), fold).find(r => !r.isDir)
   if (!hit) return
   // Its folders open with it, so the card stays in sight once the query is cleared.
   const label = views.find(v => v.key === hit.key)?.label ?? ''
-  await setPanel($, q => ({ openFile: hit.key, fileQuery: text, openDirs: [...new Set([...(q.openDirs ?? []), ...folderKeys(label, root)])] }))
+  await setPanel($, q => ({ openFile: hit.key, fileQuery: text, openDirs: [...new Set([...(q.openDirs ?? []), ...folderKeys(label, root, fold)])] }))
   await loadDiff($, hit.key)
 }
 
@@ -1374,16 +1484,25 @@ async function toggleCard($: EngineInterface, key: string): Promise<void> {
 // A press on a row of the tree: a folder shuts or opens, a file its card. A
 // second press on the same row soon after enters the folder (the breadcrumbs
 // lead back) or opens the file itself.
-async function pressRow($: EngineInterface, id: string): Promise<void> {
+// `isShown`: whether the row was drawn open, also when only a fresh file opened it.
+async function pressRow($: EngineInterface, id: string, isShown?: boolean): Promise<void> {
   const at = await $.clock.now()
   const isDouble = lastPress.key === id && at - lastPress.at < DOUBLE_MS
   lastPress = { key: isDouble ? '' : id, at }
   if (id.startsWith('dir:')) {
     await setPanel($, q => {
       const open = q.openDirs ?? []
+      const shutAt = { ...(q.shutAt ?? {}) }
       // The first press of the two opened the folder: entering it closes it again.
       if (isDouble) return { fileRoot: folderOf(id), openDirs: open.filter(k => k !== id), openFile: undefined }
-      return { openDirs: open.includes(id) ? open.filter(k => k !== id) : [...open, id] }
+      // Shown open (by a press, or a file that shimmers in it): shut it, and keep it
+      // shut against what was touched before this press.
+      if (isShown ?? open.includes(id)) {
+        shutAt[id] = at
+        return { openDirs: open.filter(k => k !== id), shutAt: Object.fromEntries(Object.entries(shutAt).slice(-200)) }
+      }
+      delete shutAt[id]
+      return { openDirs: [...open, id].slice(-500), shutAt }
     })
     return
   }
@@ -1952,7 +2071,8 @@ export const register: Register = (on, options) => {
     if (e.element.startsWith('rows-')) {
       await blurSearch($)
       const id = (e.data as { press?: unknown }).press
-      if (typeof id === 'string') await pressRow($, id)
+      const isOpen = (e.data as { isOpen?: unknown }).isOpen
+      if (typeof id === 'string') await pressRow($, id, typeof isOpen === 'boolean' ? isOpen : undefined)
       return {}
     }
     return next(e)
@@ -2086,8 +2206,16 @@ export const register: Register = (on, options) => {
             label={`✕ ${s.clear} (${doneCount})`}
             variant="secondary"
             onPress={async () => {
-              await retire($, (await read($, runs)).filter(r => !isActive(r)))
-              await update($, runs, l => l.filter(isActive))
+              // What leaves is what the one write took off: an agent that ends in
+              // between is either kept or retired, never dropped unaccounted.
+              let gone: CrewRun[] = []
+              await update($, runs, l => {
+                gone = l.filter(r => !isActive(r))
+                return l.filter(isActive)
+              })
+              await retire($, gone)
+              // A focus on an agent that is gone would dim the tree with no way back.
+              if (gone.some(r => r.agentId && r.agentId === p.focusAgent)) await setPanel($, () => ({ focusAgent: undefined }))
             }}
           />
         </Box>
@@ -2202,13 +2330,19 @@ export const register: Register = (on, options) => {
     const root = p.fileRoot ?? ''
     const everyFile = await read($, tree)
     if (p.fileFilter === 'all' && !everyFile) $.clock.after(1, () => void syncTree($).catch(() => undefined))
-    const allViews = underFolder(fileViews(fileList, g, base, p.fileFilter, everyFile?.paths), root)
+    const allViews = underFolder(fileViews(fileList, g, base, p.fileFilter, everyFile?.paths), root, fold)
     const views = query ? allViews.filter(v => v.label.toLowerCase().includes(query)) : allViews
-    const treeAll = rowsUnder(views.map(v => ({ key: v.key, label: v.label })), root)
+    const treeAll = rowsUnder(views.map(v => ({ key: v.key, label: v.label })), root, fold)
     const dirKeys = treeAll.filter(r => r.isDir).map(r => r.key)
-    // Folders are shut until opened; a search opens every one that holds a hit.
+    // Folders are shut until opened; a search opens every one that holds a hit,
+    // and a file just read, changed or committed opens its folders while it
+    // shimmers, so what the agents touch shows. They shut again after, unless opened.
     const openDirs = new Set(p.openDirs ?? [])
-    const shut = new Set(query ? [] : dirKeys.filter(k => !openDirs.has(k)))
+    const shutAt = p.shutAt ?? {}
+    const freshDirs = new Set(
+      views.flatMap(v => (v.file && at - v.file.lastAt < FRESH_MS ? folderKeys(v.label, root, fold).filter(k => (shutAt[k] ?? -Infinity) < (v.file?.lastAt ?? 0)) : [])),
+    )
+    const shut = new Set(query ? [] : dirKeys.filter(k => !openDirs.has(k) && !freshDirs.has(k)))
     const isAllShut = dirKeys.length > 0 && dirKeys.every(k => shut.has(k))
     const branch = g ? `⑂ ${g.branch || 'HEAD'}${g.ahead ? ` ↑${g.ahead}` : ''}${g.behind ? ` ↓${g.behind}` : ''}` : ''
     const focusRun = p.focusAgent ? byAgent.get(p.focusAgent) : undefined
@@ -2239,18 +2373,23 @@ export const register: Register = (on, options) => {
           </Button>
         )}
         <Box flexGrow={1} />
-        {!p.isFilesCollapsed && dirKeys.length > 0 && (
+        {/* A search shows every folder with a hit open: nothing to fold then. */}
+        {!p.isFilesCollapsed && !query && dirKeys.length > 0 && (
           <Button
             key="files-fold-all"
             label={isAllShut ? '⊞' : '⊟'}
             plain
             dimColor
-            onPress={() =>
-              setPanel($, q => {
+            onPress={async () => {
+              const t = await $.clock.now()
+              await setPanel($, q => {
                 const open = (q.openDirs ?? []).filter(k => !dirKeys.includes(k))
-                return { openDirs: isAllShut ? [...open, ...dirKeys] : open }
+                if (isAllShut) return { openDirs: [...open, ...dirKeys].slice(-500) }
+                // Shut means shut, also for folders a fresh file holds open.
+                const shutAt = { ...(q.shutAt ?? {}), ...Object.fromEntries(dirKeys.map(k => [k, t])) }
+                return { openDirs: open, shutAt: Object.fromEntries(Object.entries(shutAt).slice(-200)) }
               })
-            }
+            }}
           />
         )}
         <Button key="files-refresh" label="↻" plain dimColor onPress={() => syncGit($)} />
@@ -2408,14 +2547,15 @@ export const register: Register = (on, options) => {
     const fileRowsOf = (rows: TreeRow[], base: number): FileRowSpec[] =>
       rows.flatMap(r => {
         const indent = '  '.repeat(Math.max(0, r.depth - base))
-        if (r.isDir) return [{ id: r.key, left: [{ t: `${indent}${shut.has(r.key) ? '▸' : '▾'} ${r.name}/`, dim: true }], right: [] }]
+        if (r.isDir) return [{ id: r.key, isOpen: !shut.has(r.key), left: [{ t: `${indent}${shut.has(r.key) ? '▸' : '▾'} ${r.name}/`, dim: true }], right: [] }]
         const v = viewByKey.get(r.key)
         if (!v) return []
         const color = fileColor(v)
         const badge = gitBadge(v)
         const isFresh = Boolean(v.file && at - v.file.lastAt < FRESH_MS)
         const isOpen = p.openFile === v.key
-        const isDim = Boolean(p.focusAgent && !(v.file?.agents ?? []).includes(p.focusAgent))
+        // Only while the focused agent is listed, and so its ✕ in the header with it.
+        const isDim = Boolean(focusRun && p.focusAgent && !(v.file?.agents ?? []).includes(p.focusAgent))
         const tone = isFresh && !isDim ? (v.file?.lastKind ?? 'read') : undefined
         const right: Seg[] = (v.file?.agents.slice(0, 6) ?? []).map(a => ({ t: '●', c: agentColor(a, byAgent), dim: isDim }))
         if (badge) right.push({ t: ` ${badge}`, c: v.gitFile ? WRITE_COLOR : COMMIT_COLOR, dim: isDim })
@@ -2448,7 +2588,7 @@ export const register: Register = (on, options) => {
       if (r.isDir)
         return (
           <Box key={`f-${r.key}`} marginLeft={r.depth * 2}>
-            <Button key={`dir-${r.key}`} plain dimColor onPress={() => pressRow($, r.key)}>
+            <Button key={`dir-${r.key}`} plain dimColor onPress={() => pressRow($, r.key, !shut.has(r.key))}>
               {shut.has(r.key) ? '▸' : '▾'} {r.name}/
             </Button>
           </Box>

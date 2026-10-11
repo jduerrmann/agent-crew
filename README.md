@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Claude_Code-mod-D97757" alt="Claude Code mod">
-  <img src="https://img.shields.io/badge/version-0.6.0-378ADD" alt="Version 0.6.0">
+  <img src="https://img.shields.io/badge/version-0.7.0-378ADD" alt="Version 0.7.0">
   <img src="https://img.shields.io/badge/license-PolyForm_Noncommercial-22c55e" alt="PolyForm Noncommercial license">
 </p>
 
@@ -103,7 +103,7 @@ The section is off by default. Costs are estimated from token counts and a price
 - **Tabs:** *Active* and *Finished*. A finished parent stays in *Active* while one of its children is still running.
 - **Rows:** model, effort, the agent's latest action, context fill, estimated cost and run time.
 - **Details:** expanding a row shows the agent's task, its recent tool calls and messages, the files it read and changed, and its final answer. *Highlight its files* dims every other file in the tree.
-- **Notifications** when background agents finish and whenever an agent fails.
+- **Notifications** when background or workflow agents finish, and whenever an agent fails or is stopped.
 - **Clear finished** removes finished agents from the list. Their cost remains in the totals.
 
 **Compact mode** folds the section into two rows of crabs, one for active and one for finished agents, with a badge for done, failed or stopped. The other sections are unaffected.
@@ -132,14 +132,16 @@ A tree of every file the main chat or a subagent touched, plus every file git re
 - **Read** (purple): from `Read`, `Grep` results and shell readers such as `cat`, `head`, `sed`, `rg` or `Get-Content`.
 - **Changed** (orange): with added and deleted lines from git, or *new* for untracked files.
 - **Committed** (green): with the short hash of the commit.
-- **Recent activity:** a file that was just read, changed or committed shimmers in its colour for a few seconds.
-- **Search:** the search line narrows the tree to matching paths; Enter opens the first hit.
-- **Agents:** coloured dots show which agents touched a file.
-- **Details:** clicking a file shows its history (who read, changed or committed it, and when) and its diff against `HEAD`, or its content if it is untracked.
+- **Recent activity:** a file that was just read, changed or committed shimmers in its colour for a few seconds; its folders open while it does, and shut again afterwards unless you opened them.
+- **Search:** the search line narrows the tree to matching paths and opens the folders that hold them; Enter opens the first hit's details, × clears the line.
+- **Agents:** coloured dots show which agents touched a file (up to six). *Highlight its files* in an agent's details dims every other file; the `◎ agent ✕` chip in the header lifts it.
+- **Details:** clicking a file opens a card with its history (who read, changed or committed it, and when) and, when git sees changes, a second tab with its diff against `HEAD`, or its content if it is untracked.
 - **Open:** double-clicking a file, or *Open* in its details, opens it in the app your system uses for that kind of file.
-- **Folders:** folders start collapsed; clicking one expands or collapses it, and a search expands every folder that holds a hit. Double-clicking a folder shows only that folder, with breadcrumbs under the search line, next to the branch, to go back up. ⊞ expands every folder in view (⊟ collapses them again), ↻ reads git again.
+- **Folders:** folders start collapsed; clicking one expands or collapses it. Double-clicking a folder shows only that folder.
+- **Breadcrumbs:** under the search line, the main folder and the branch with how far it is ahead of or behind its upstream; once a folder is entered, the steps above it lead back up.
+- **Header:** `▾ Files · N` folds the section; ⊞ expands every folder in view (⊟ collapses them again), ↻ reads git again.
 - **Conflicts:** when two agents change the same file within ten minutes, the file is marked and a notice appears. A commit resolves the mark.
-- **Filters:** *Activity* (the default) shows every file the session's agents read or changed, plus what git reports as changed; *Changes* only what was changed; *All* every file under the root besides, untouched ones drawn quiet (git's own list, or a bounded walk outside a repository).
+- **Filters:** *Activity* (the default) shows every file the session's agents read or changed, plus what git reports as changed; *Changes* only what was changed; *All* every file under the root besides, untouched ones drawn quiet (git's own list, or outside a repository a walk of at most 300 folders; 4000 files at most either way).
 
 ## Settings
 
@@ -147,7 +149,7 @@ A tree of every file the main chat or a subagent touched, plus every file git re
   <img src="media/settings.svg" alt="Settings pane: a Sections group with switches for Usage, Cost, Subagents, Timeline and Files, and a Usage group with switches for Context, 5-hour limit and Weekly limit" width="860">
 </p>
 
-Open the settings with `/crew-settings` or the *Settings* button at the top of the pane. They are grouped into *Sections*, *Usage*, *General* and *Notifications*, and every change applies immediately. The pane writes the same values as `/config`; they can also be set in `~/.claude/settings.json`:
+Open the settings with `/crew-settings` or the *Settings* button at the top of the pane. They are grouped into *Sections*, *Usage*, *General* and *Notifications*, followed by *Version*; every change applies immediately. The pane writes the same values as `/config`; they can also be set in `~/.claude/settings.json`:
 
 ```json
 { "pluginConfigs": { "agent-crew": { "options": { "showTotals": true, "showFiles": false } } } }
@@ -164,9 +166,9 @@ Open the settings with `/crew-settings` or the *Settings* button at the top of t
 | `usageFiveHour` | `true` | 5-hour limit in the usage section. |
 | `usageWeek` | `true` | Weekly limits in the usage section. |
 | `autoOpen` | `true` | Open the pane when the first subagent of a session starts. |
-| `autoOpenFiles` | `true` | Open the pane when a file is first read or changed in a session, as filetree does. |
+| `autoOpenFiles` | `true` | Open the pane when a file is first read or changed in a session, as filetree does. Either way the pane opens by itself once a session at most. |
 | `language` | `auto` | `auto`, `de` or `en`. `auto` follows Claude Code's language setting, then the system locale. |
-| `notifyAgents` | `background` | Notify when agents end: `off`, `failures`, `background` (background agents and any failure) or `all`. |
+| `notifyAgents` | `background` | Notify when agents end: `off`, `failures`, `background` (background and workflow agents, and any failure or stop) or `all`. |
 | `notifyVia` | `toast` | `toast` inside Claude Code, or `system` for the terminal's or operating system's notification. |
 | `limitWarnings` | `true` | Warn at 80 % and 95 % of a limit and at 85 % context. |
 | `warnConflicts` | `true` | Warn about conflicting edits. |
@@ -174,7 +176,7 @@ Open the settings with `/crew-settings` or the *Settings* button at the top of t
 
 ### Updates
 
-Once a day agent-crew compares its version with the one published on GitHub. A new version is announced once, and shows as **↑ version** beside *Settings* at the top of the pane. The *Version* group of the settings checks on demand and, for a copy installed from the marketplace, updates it in place (`claude plugin update`) and reloads the plugins. A copy loaded from a folder of its own, such as a working copy, is updated there with `git pull`. `checkUpdates` turns the daily check off.
+A few seconds after a session starts, and at most once a day, agent-crew compares its version with the one published on GitHub; a check that fails is tried again within the hour. A new version is announced once, and shows as **↑ version** beside *Settings* at the top of the pane. The *Version* group of the settings checks on demand and, for a copy installed from the marketplace, updates it in place (`claude plugin marketplace update agent-crew`, then `claude plugin update agent-crew@agent-crew`) and reloads the plugins. For a copy loaded from a folder of its own, such as a working copy, it only points out that `git pull` in that folder brings the new version. `checkUpdates` turns the daily check off; the button still works.
 
 ## How it works
 

@@ -9,23 +9,32 @@ import type { ClientModule } from 'claude-code'
 // the prompt or presses anything else in the pane.
 
 export type SearchBoxProps = { value: string; placeholder: string; hits: string; line: string; accent: string; isFocused: boolean }
-type Local = { text: string; synced: string }
+// `posted`: the values sent and not yet seen back. Keys typed faster than a round
+// trip make the plugin's props trail the field; an older one coming back is an
+// echo, not a change, and must not wind the text back and lose a key.
+type Local = { text: string; synced: string; posted: string[] }
 
 const SearchBox: ClientModule<SearchBoxProps, Local> = (props, surface) => {
   const { Box, Text } = surface.elements
   let state = surface.state
   if (state === undefined) {
-    state = { text: props.value, synced: props.value }
+    state = { text: props.value, synced: props.value, posted: [] }
     surface.setState(state)
   } else if (props.value !== state.synced) {
-    // The plugin changed the query (the ×, a cleared filter): take it.
-    state = { ...state, text: props.value, synced: props.value }
+    const at = state.posted.indexOf(props.value)
+    if (at >= 0) {
+      // An echo of something typed: drop it and what came before, keep the text.
+      state = { ...state, synced: props.value, posted: state.posted.slice(at + 1) }
+    } else {
+      // The plugin changed the query (the ×, a cleared filter): take it.
+      state = { ...state, text: props.value, synced: props.value, posted: [] }
+    }
     surface.setState(state)
   }
 
   const edit = (text: string) => {
     const cur = surface.state ?? state
-    surface.setState({ ...cur, text, synced: text })
+    surface.setState({ ...cur, text, posted: [...cur.posted, text].slice(-20) })
     // One post a frame reaches the hooks: a key proves the focus, so it rides along.
     surface.post({ query: text, focus: true })
   }
