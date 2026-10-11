@@ -1,12 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
-import type { CrewUsage } from '../types'
+import type { CrewUpdate, CrewUsage } from '../types'
 import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewPanel, CrewRun, CrewStatus, CrewTab } from '../types'
 import { CLAY, FONT, crab, fitText, svg, textWidth, xml } from './crab'
 import type { FileRowSpec, FileRowsProps, Seg } from './filerows'
 import type { SearchBoxProps } from './searchbox'
-import { applyNumstat, folderKeys, folderOf, inside, keyOf, mayChange, openCommand, parseStatus, posix, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
+import { applyNumstat, folderKeys, folderOf, inside, isNewer, keyOf, mayChange, openCommand, parseStatus, posix, rawGithubUrl, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
 import type { TreeRow } from './files'
 import type { Tab, TabsProps } from './tabs'
 
@@ -38,6 +38,7 @@ const warned = atom({ plugin: 'agent-crew', key: 'warned' } as const, {})
 const settingsRev = atom({ plugin: 'agent-crew', key: 'settingsRev' } as const, 0)
 const mainCost = atom({ plugin: 'agent-crew', key: 'mainCost' } as const, { cost: 0, tokens: 0 })
 const tree = atom({ plugin: 'agent-crew', key: 'tree' } as const, null)
+const updateInfo = atom({ plugin: 'agent-crew', key: 'update' } as const, null)
 
 // The plugin's options, set by register on every (re)load.
 let opts: Record<string, unknown> = {}
@@ -130,6 +131,10 @@ const STRINGS = {
     focusOn: 'Seine Dateien hervorheben',
     focusOff: 'Hervorhebung aufheben',
     history: 'Verlauf',
+    updateAvailable: (v: string) => `agent-crew ${v} ist verfügbar: /crew-settings zum Aktualisieren`,
+    updateDone: (v: string) => `agent-crew ${v} installiert, die Plugins laden neu`,
+    updateFailed: (why: string) => `Update fehlgeschlagen: ${why}`,
+    updateBadge: (v: string) => `↑ ${v}`,
     noHistory: 'Noch nichts aufgezeichnet.',
     openIt: 'Öffnen',
     openFailed: (name: string) => `${name} ließ sich nicht öffnen`,
@@ -205,6 +210,10 @@ const STRINGS = {
     focusOn: 'Highlight its files',
     focusOff: 'Clear highlight',
     history: 'History',
+    updateAvailable: (v: string) => `agent-crew ${v} is available: /crew-settings to update`,
+    updateDone: (v: string) => `agent-crew ${v} installed, plugins reloading`,
+    updateFailed: (why: string) => `Update failed: ${why}`,
+    updateBadge: (v: string) => `↑ ${v}`,
     noHistory: 'Nothing recorded yet.',
     openIt: 'Open',
     openFailed: (name: string) => `Could not open ${name}`,
@@ -867,6 +876,76 @@ async function autoOpenPane($: EngineInterface, cause: 'agents' | 'files'): Prom
   void syncGit($).catch(() => undefined)
 }
 
+// --- updates: the published plugin.json on GitHub against this copy's own, at
+// most once a day; a notice once per new version; installed from the settings.
+
+const PLUGIN_ID = 'agent-crew@agent-crew'
+const CHECK_EVERY_MS = 24 * 3_600_000
+
+async function manifest($: EngineInterface): Promise<{ version: string; repository: string }> {
+  try {
+    const m = JSON.parse(String(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))) as { version?: unknown; repository?: unknown }
+    return { version: typeof m.version === 'string' ? m.version : '0.0.0', repository: typeof m.repository === 'string' ? m.repository : '' }
+  } catch {
+    return { version: '0.0.0', repository: '' }
+  }
+}
+
+// `force`: look now, whatever the day; `isOffline`: only note this copy's version.
+async function checkUpdate($: EngineInterface, force = false, isOffline = false): Promise<void> {
+  const own = await manifest($)
+  const root = posix($.plugin.root)
+  // An installed copy lives in the plugin cache; anything else is a folder of its own.
+  const source = /\/\.claude\/plugins\/cache\//i.test(root) ? 'marketplace' : 'folder'
+  const prev = await read($, updateInfo)
+  const base: CrewUpdate = { current: own.version, source, root, latest: prev?.latest }
+  const saved = (await $.store.get('update')) as { checkedAt?: number; latest?: string; notified?: string } | undefined
+  const at = await $.clock.now()
+  let latest = saved?.latest
+  if (!isOffline && (force || !saved?.checkedAt || at - saved.checkedAt > CHECK_EVERY_MS)) {
+    await update($, updateInfo, () => ({ ...base, phase: 'checking' }))
+    const url = rawGithubUrl(own.repository, 'plugins/agent-crew/.claude-plugin/plugin.json')
+    try {
+      const r = url ? await $.http.fetch(url) : undefined
+      const v = r?.ok ? (JSON.parse(r.text) as { version?: unknown }).version : undefined
+      if (typeof v === 'string') latest = v
+    } catch {
+      // Offline or refused: keep what was known.
+    }
+    await $.store.set('update', { ...saved, checkedAt: at, latest })
+  }
+  await update($, updateInfo, () => ({ ...base, latest }))
+  if (opts.checkUpdates !== false && latest && isNewer(latest, own.version) && saved?.notified !== latest) {
+    await $.store.set('update', { ...((await $.store.get('update')) as object), notified: latest })
+    await notify($, tr().updateAvailable(latest))
+  }
+}
+
+// `claude plugin update` after the marketplace is fetched again, then a reload.
+async function runUpdate($: EngineInterface): Promise<void> {
+  const cur = await read($, updateInfo)
+  if (!cur || cur.source !== 'marketplace') return
+  await update($, updateInfo, () => ({ ...cur, phase: 'updating', error: undefined }))
+  const run = async (argv: string[]) => {
+    try {
+      const r = await $.process.run(argv, { timeoutMs: 120_000 })
+      return r.exitCode === 0 ? '' : r.stderr.trim().split('\n')[0] || `exit ${r.exitCode}`
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }
+  const error = (await run(['claude', 'plugin', 'marketplace', 'update', 'agent-crew'])) || (await run(['claude', 'plugin', 'update', PLUGIN_ID]))
+  if (error) {
+    await update($, updateInfo, () => ({ ...cur, phase: 'failed', error }))
+    $.ui.toast(tr().updateFailed(error))
+    return
+  }
+  await update($, updateInfo, () => ({ ...cur, phase: 'done' }))
+  $.ui.toast(tr().updateDone(cur.latest ?? ''))
+  // The new copy loads with the plugins: a dispatch of its own, after the toast.
+  $.clock.after(800, () => void $.command.run({ command: 'reload-plugins' }).catch(() => undefined))
+}
+
 async function togglePane($: EngineInterface): Promise<boolean> {
   const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
   if (isOpen) {
@@ -1386,12 +1465,22 @@ const FIELDS: readonly Field[] = [
   { key: 'notifyVia', group: 'notify', default: 'toast', choices: ['toast', 'system'] },
   { key: 'limitWarnings', group: 'notify', default: true },
   { key: 'warnConflicts', group: 'notify', default: true },
+  { key: 'checkUpdates', group: 'notify', default: true },
 ]
 
 const FIELD_TEXT = {
   de: {
     title: 'Crew · Einstellungen',
     groups: { sections: 'Abschnitte', usage: 'Nutzung', view: 'Allgemein', notify: 'Benachrichtigungen' } as Record<Group, string>,
+    version: 'Version',
+    upToDate: 'Aktuell',
+    available: (v: string) => `${v} verfügbar`,
+    checking: 'Wird geprüft …',
+    checkNow: 'Nach Updates suchen',
+    updateTo: (v: string) => `Auf ${v} aktualisieren`,
+    updating: 'Wird aktualisiert …',
+    updated: 'Installiert, die Plugins laden neu.',
+    fromFolder: (root: string) => `Aus einem Ordner geladen (${root}): dort mit git pull aktualisieren.`,
     on: 'An',
     off: 'Aus',
     locked: 'Vom Administrator festgelegt',
@@ -1414,6 +1503,7 @@ const FIELD_TEXT = {
       notifyVia: ['Meldungen als', 'In Claude Code oder als Benachrichtigung von Terminal bzw. System'],
       limitWarnings: ['Limit-Warnungen', 'Bei 80 % und 95 % eines Limits, und bei 85 % Kontext'],
       warnConflicts: ['Konflikt-Warnung', 'Wenn zwei Agenten innerhalb von 10 Minuten dieselbe Datei ändern'],
+      checkUpdates: ['Update-Hinweis', 'Einmal am Tag nachsehen, ob es eine neue Version von agent-crew gibt, und Bescheid geben'],
     } as Record<string, [string, string]>,
     choices: {
       auto: 'Automatisch', de: 'Deutsch', en: 'English',
@@ -1424,6 +1514,15 @@ const FIELD_TEXT = {
   en: {
     title: 'Crew · Settings',
     groups: { sections: 'Sections', usage: 'Usage', view: 'General', notify: 'Notifications' } as Record<Group, string>,
+    version: 'Version',
+    upToDate: 'Up to date',
+    available: (v: string) => `${v} available`,
+    checking: 'Checking …',
+    checkNow: 'Check for updates',
+    updateTo: (v: string) => `Update to ${v}`,
+    updating: 'Updating …',
+    updated: 'Installed, plugins reloading.',
+    fromFolder: (root: string) => `Loaded from a folder (${root}): update it there with git pull.`,
     on: 'On',
     off: 'Off',
     locked: 'Set by your administrator',
@@ -1446,6 +1545,7 @@ const FIELD_TEXT = {
       notifyVia: ['Notices as', 'Inside Claude Code, or as the terminal’s or system’s notification'],
       limitWarnings: ['Limit warnings', 'At 80 % and 95 % of a limit, and at 85 % context'],
       warnConflicts: ['Conflict warning', 'When two agents change the same file within 10 minutes'],
+      checkUpdates: ['Update notice', 'Look once a day for a new version of agent-crew, and say so'],
     } as Record<string, [string, string]>,
     choices: {
       auto: 'Automatic', de: 'Deutsch', en: 'English',
@@ -1514,11 +1614,16 @@ export const register: Register = (on, options) => {
         if (list.some(r => r.status === 'running') || fresh || (counts && isOpen)) await update($, now, () => at)
         if (list.some(isActive) && tick % 3 === 0) await reconcile($)
         if (tick % 10 === 0 && isOpen) await syncGit($)
+        // Every hour a look whether a day has passed since the last update check.
+        if (tick % 3600 === 0 && opts.checkUpdates !== false) await checkUpdate($)
       })().catch(() => undefined)
     })
     await reconcile($)
     await refreshStatus($)
     void syncGit($).catch(() => undefined)
+    // A moment after the start, so the session's first turn is not held up.
+    if (opts.checkUpdates !== false) $.clock.after(5_000, () => void checkUpdate($).catch(() => undefined))
+    else void checkUpdate($, false, true).catch(() => undefined)
     try {
       const u = await $.session.usage()
       await storeUsage($, u.context, u.rateLimits)
@@ -1616,9 +1721,51 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    // The version: this copy's, the published one, and the buttons to look and to update.
+    const up = await read($, updateInfo)
+    const hasNew = Boolean(up?.latest && isNewer(up.latest, up.current))
+    const state = !up
+      ? ''
+      : up.phase === 'checking'
+        ? f.checking
+        : up.phase === 'updating'
+          ? f.updating
+          : up.phase === 'done'
+            ? f.updated
+            : up.phase === 'failed'
+              ? (up.error ?? '')
+              : hasNew && up.latest
+                ? f.available(up.latest)
+                : up.latest
+                  ? f.upToDate
+                  : ''
+    const versionGroup = (
+      <Box key="group-version" {...FRAME}>
+        <Box marginBottom={1}>
+          <Text bold dimColor>
+            {f.version}
+          </Text>
+        </Box>
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center" marginBottom={1}>
+          <Text>
+            <Text bold>agent-crew {up?.current ?? ''}</Text>
+            {state ? <Text color={hasNew && up?.phase !== 'done' ? CLAY : up?.phase === 'failed' ? 'red' : undefined} dimColor={!hasNew}>{`  ${state}`}</Text> : null}
+          </Text>
+          <Box flexDirection="row" gap={1}>
+            <Button key="update-check" label={f.checkNow} variant="secondary" onPress={() => $.clock.after(1, () => void checkUpdate($, true).catch(() => undefined))} />
+            {hasNew && up?.source === 'marketplace' && up.phase !== 'updating' && up.phase !== 'done' && up.latest ? (
+              <Button key="update-run" label={f.updateTo(up.latest)} variant="primary" onPress={() => $.clock.after(1, () => void runUpdate($).catch(() => undefined))} />
+            ) : null}
+          </Box>
+        </Box>
+        {up?.source === 'folder' && <Text dimColor wrap="wrap">{f.fromFolder(up.root)}</Text>}
+      </Box>
+    )
+
     return (
       <Box flexDirection="column" gap={1}>
         {GROUPS.map(group)}
+        {versionGroup}
         <Text dimColor>{f.footer}</Text>
       </Box>
     )
@@ -1844,8 +1991,12 @@ export const register: Register = (on, options) => {
     // Drawn again when a setting changes in the settings pane.
     await read($, settingsRev)
     const meters = metersOf(await read($, usage)).filter(m => opts[meterOption(m.key)] !== false)
+    // A new version shows beside the settings, which install it.
+    const up = await read($, updateInfo)
+    const newVersion = opts.checkUpdates !== false && up?.latest && isNewer(up.latest, up.current) && up.phase !== 'done' ? up.latest : ''
     const settingsRow = (
-      <Box key="settings-row" flexDirection="row" justifyContent="flex-end">
+      <Box key="settings-row" flexDirection="row" justifyContent="flex-end" gap={2}>
+        {newVersion ? <Button key="update-badge" label={s.updateBadge(newVersion)} variant="primary" onPress={() => openSettings($)} /> : null}
         <Button key="open-settings" label={`⚙ ${ft().open}`} plain onPress={() => openSettings($)} />
       </Box>
     )

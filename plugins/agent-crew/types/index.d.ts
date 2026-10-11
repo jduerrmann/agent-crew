@@ -81,6 +81,18 @@ export type CrewCleared = {
   ids?: string[]
 }
 
+/** What the update check found: this copy's version, the published one, where this copy loads from. */
+export type CrewUpdate = {
+  current: string
+  latest?: string
+  /** `marketplace`: an installed copy, updated by `claude plugin update`; `folder`: loaded from a folder of its own (a working copy). */
+  source: 'marketplace' | 'folder'
+  root: string
+  /** Where an update stands: being checked or installed, failed with a reason, or installed. */
+  phase?: 'checking' | 'updating' | 'failed' | 'done'
+  error?: string
+}
+
 export type CrewFile = {
   /** Case-folded on Windows; what git status and tool calls are matched by. */
   key: string
@@ -148,6 +160,8 @@ declare module 'claude-code' {
       settingsRev: number
       /** The main chat's own requests since the mod loaded: estimated cost and tokens. */
       mainCost: { cost: number; tokens: number; cache?: number }
+      /** The running version and the newest one published, for the update notice and the settings. */
+      update: CrewUpdate | null
       /** Every file under the root, for the tree's "All" filter: git's own list, or a bounded walk. */
       tree: { root: string; paths: string[] } | null
     }

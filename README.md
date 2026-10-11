@@ -170,6 +170,11 @@ Open the settings with `/crew-settings` or the *Settings* button at the top of t
 | `notifyVia` | `toast` | `toast` inside Claude Code, or `system` for the terminal's or operating system's notification. |
 | `limitWarnings` | `true` | Warn at 80 % and 95 % of a limit and at 85 % context. |
 | `warnConflicts` | `true` | Warn about conflicting edits. |
+| `checkUpdates` | `true` | Look once a day for a new version on GitHub and say so. |
+
+### Updates
+
+Once a day agent-crew compares its version with the one published on GitHub. A new version is announced once, and shows as **↑ version** beside *Settings* at the top of the pane. The *Version* group of the settings checks on demand and, for a copy installed from the marketplace, updates it in place (`claude plugin update`) and reloads the plugins. A copy loaded from a folder of its own, such as a working copy, is updated there with `git pull`. `checkUpdates` turns the daily check off.
 
 ## How it works
 

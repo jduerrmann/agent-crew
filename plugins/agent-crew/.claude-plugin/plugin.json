@@ -75,6 +75,12 @@
       "description": "A notice when the 5-hour or weekly limit passes 80 % and 95 %, and when the context passes 85 %",
       "default": true
     },
+    "checkUpdates": {
+      "type": "boolean",
+      "title": "Update notice",
+      "description": "Looks once a day for a new version on GitHub and says so; the settings pane installs it",
+      "default": true
+    },
     "warnConflicts": {
       "type": "boolean",
       "title": "Warn about conflicting edits",

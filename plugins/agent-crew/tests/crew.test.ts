@@ -524,3 +524,33 @@ test('the filters: activity by default, changes alone, or every file under the r
   await ui.press({ key: 'files-filter-activity' })
   expect(await hasRow(ui, '/work/notes.md')).toBe(false)
 })
+
+test('a newer published version shows beside the settings, once as a notice, and in the settings pane', async ($, on) => {
+  const { toasts, clock } = engine(on)
+  mock.store(on)
+  // This copy's manifest, and the one GitHub publishes.
+  on('fs.read', (_$, e) => ({ value: (e as { path: string }).path.endsWith('plugin.json') ? JSON.stringify({ version: '0.6.0', repository: 'https://github.com/jduerrmann/agent-crew' }) : '' }) as never)
+  const fetched: string[] = []
+  on('http.fetch', (_$, e) => (fetched.push((e as { url: string }).url), { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: '9.9.9' }) } }) as never)
+  await start($)
+  await clock.advance(6_000)
+  expect(fetched).toEqual(['https://raw.githubusercontent.com/jduerrmann/agent-crew/HEAD/plugins/agent-crew/.claude-plugin/plugin.json'])
+  expect(toasts.filter(t => t.includes('agent-crew 9.9.9 ist verfügbar'))).toHaveLength(1)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ key: 'update-badge' })).toBeDefined()
+  const settings = await $.ui.mount({ plugin: 'agent-crew', surface: 'terminal', component: 'Pane', requestId: 'agent-crew-settings', props: SETTINGS_PROPS })
+  const drawn = JSON.stringify(await settings.drawn())
+  expect(drawn).toContain('9.9.9 verfügbar')
+  expect(await settings.find({ key: 'update-check' })).toBeDefined()
+})
+
+test('checkUpdates off asks nothing of the network', { options: { checkUpdates: false } }, async ($, on) => {
+  const { clock, toasts } = engine(on)
+  mock.store(on)
+  let asked = 0
+  on('http.fetch', () => (asked++, { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: '9.9.9' }) } }) as never)
+  await start($)
+  await clock.advance(6_000)
+  expect(asked).toBe(0)
+  expect(toasts.some(t => t.includes('9.9.9'))).toBe(false)
+})

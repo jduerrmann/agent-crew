@@ -213,6 +213,25 @@ export function applyNumstat(raw: string, root: string, files: Record<string, Cr
   }
 }
 
+// --- versions.
+
+/** Whether `a` is a later version than `b`, by their dotted numbers (`0.10.0` > `0.9.2`). */
+export function isNewer(a: string, b: string): boolean {
+  const pa = a.split(/[.+-]/).map(n => Number.parseInt(n, 10) || 0)
+  const pb = b.split(/[.+-]/).map(n => Number.parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d) return d > 0
+  }
+  return false
+}
+
+/** The raw URL of a file on a GitHub repository's default branch, from the manifest's `repository`. */
+export function rawGithubUrl(repository: string, path: string): string | undefined {
+  const m = /github\.com[/:]([^/]+)\/([^/#?]+?)(?:\.git)?\/?$/.exec(repository.trim())
+  return m ? `https://raw.githubusercontent.com/${m[1]}/${m[2]}/HEAD/${path}` : undefined
+}
+
 // --- opening a file in the app the system gives its kind, after filetree's
 // hooks/open.ts. On Windows the path travels in the environment, never quoted.
 

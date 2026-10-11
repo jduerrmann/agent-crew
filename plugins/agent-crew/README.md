@@ -35,6 +35,7 @@ Reads come from `Read`, `Grep` results and shell readers (`cat`, `head`, `sed`, 
 | `notifyVia` | `toast` | `toast`, or `system` for the terminal's or system's notification |
 | `limitWarnings` | `true` | Warnings at 80 % and 95 % of a limit and at 85 % context |
 | `warnConflicts` | `true` | Notice on conflicting edits |
+| `checkUpdates` | `true` | Daily check for a new version; the settings pane installs it |
 
 ## Install
 
