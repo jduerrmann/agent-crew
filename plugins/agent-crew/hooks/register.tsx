@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
 import type { CrewUpdate, CrewUsage } from '../types'
-import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewPanel, CrewRun, CrewStatus, CrewTab } from '../types'
+import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewMainTurn, CrewPanel, CrewRun, CrewStatus, CrewTab } from '../types'
 import { CLAY, FLIP_MS, FONT, crab, fitText, svg, textWidth, xml } from './crab'
 import type { FileRowSpec, FileRowsProps, Seg } from './filerows'
 import type { SearchBoxProps } from './searchbox'
@@ -41,6 +41,7 @@ const mainCost = atom({ plugin: 'agent-crew', key: 'mainCost' } as const, { cost
 const tree = atom({ plugin: 'agent-crew', key: 'tree' } as const, null)
 const updateInfo = atom({ plugin: 'agent-crew', key: 'update' } as const, null)
 const typeColors = atom({ plugin: 'agent-crew', key: 'typeColors' } as const, {})
+const mainTurns = atom({ plugin: 'agent-crew', key: 'mainTurns' } as const, [])
 
 // The plugin's options, set by register on every (re)load.
 let opts: Record<string, unknown> = {}
@@ -54,6 +55,8 @@ const CONFLICT_MS = 10 * 60_000
 
 const PANE = 'agent-crew'
 const MAX_RUNS = 300
+/** The main chat's turns kept for the timeline: the newest this many. */
+const MAX_MAIN_TURNS = 200
 const MAX_CLEARED = 2000
 const MAX_FILES = 400
 const MAX_LOG = 40
@@ -1338,7 +1341,8 @@ const compactSvg = (W: number, active: CrewRun[], done: CrewRun[], t: ReturnType
   }
 }
 
-// --- the timeline: when each subagent ran, on one shared time axis.
+// --- the timeline: when the main chat worked and each subagent ran, on one
+// shared time axis. The main chat's turns share one row, at the top.
 
 const TIMELINE_MAX = 14
 const TL_ROW = 15
@@ -1350,7 +1354,7 @@ const TL_GAP_MS = 90_000
 
 // The axis of the timeline: stretches where agents ran, with each longer pause
 // folded into a fixed-width break, so two rounds an hour apart both get bars.
-const timelineAxis = (items: CrewRun[], at: number, width: number, wantGapW: number) => {
+const timelineAxis = (items: readonly { startedAt: number; endedAt?: number }[], at: number, width: number, wantGapW: number) => {
   const spans = items.map(r => [r.startedAt, r.endedAt ?? at] as const).sort((a, b) => a[0] - b[0])
   const clusters: { from: number; to: number }[] = []
   for (const [s0, s1] of spans) {
@@ -1379,16 +1383,36 @@ const timelineAxis = (items: CrewRun[], at: number, width: number, wantGapW: num
   return { xOf, breaks, gapW, total: (clusters.at(-1)?.to ?? at) - (clusters[0]?.from ?? at) }
 }
 
-const timelineSvg = (W: number, list: CrewRun[], at: number): { source: string; height: number } => {
+// A main-chat turn's colour: Claude's, red when it failed, faint when interrupted.
+const turnTone = (t: CrewMainTurn): { color: string; opacity: number } =>
+  t.reason === 'error' || t.reason === 'refusal' ? { color: '#D0453F', opacity: 0.9 } : { color: CLAY, opacity: t.reason === 'aborted' ? 0.45 : 0.9 }
+
+/** The main chat's turns the timeline shows, by the `timelineMain` option. */
+const shownTurns = (turns: readonly CrewMainTurn[]): CrewMainTurn[] => (opts.timelineMain === false ? [] : [...turns])
+
+const timelineSvg = (W: number, list: CrewRun[], turns: readonly CrewMainTurn[], at: number): { source: string; height: number } => {
   const items = timelineRuns(list)
   const labelW = Math.min(170, Math.round(W * 0.32))
   const barX = labelW + 8
   const barW = W - barX - 4
   const GAP_W = 22
-  const axis = timelineAxis(items, at, barW, GAP_W)
+  const axis = timelineAxis([...items, ...turns], at, barW, GAP_W)
+  const top = turns.length ? 1 : 0
+  const mainRow = turns.length
+    ? `<text class="s" x="0" y="11" font-family="${FONT}" font-size="11">${xml(fitText(tr().main, 11, labelW))}</text>` +
+      `<rect class="k" x="${barX}" y="4" width="${barW}" height="7" rx="3.5"/>` +
+      turns
+        .map(t => {
+          const x = barX + axis.xOf(t.startedAt)
+          const w = Math.max(3, axis.xOf(t.endedAt ?? at) - axis.xOf(t.startedAt))
+          const tone = turnTone(t)
+          return `<rect x="${x}" y="4" width="${w}" height="7" rx="3.5" fill="${tone.color}" opacity="${tone.opacity}"/>`
+        })
+        .join('')
+    : ''
   const rows = items
     .map((r, i) => {
-      const y = i * TL_ROW
+      const y = (i + top) * TL_ROW
       const x = barX + axis.xOf(r.startedAt)
       const w = Math.max(3, axis.xOf(r.endedAt ?? at) - axis.xOf(r.startedAt))
       const color = r.status === 'failed' ? '#D0453F' : colorOf(r)
@@ -1399,14 +1423,15 @@ const timelineSvg = (W: number, list: CrewRun[], at: number): { source: string; 
       )
     })
     .join('')
-  const axisY = items.length * TL_ROW + 12
+  const rowCount = items.length + top
+  const axisY = rowCount * TL_ROW + 12
   // A break: two slanted strokes across the rows, the pause written under them.
   const breaks = axis.breaks
     .map(b => {
       const cx = barX + b.x + axis.gapW / 2
       const half = Math.min(4, axis.gapW / 2)
       return (
-        `<path class="tree" d="M${cx - half} ${items.length * TL_ROW + 2}L${cx - half / 4} 0M${cx + half / 4} ${items.length * TL_ROW + 2}L${cx + half} 0" fill="none" stroke-width="1.2"/>` +
+        `<path class="tree" d="M${cx - half} ${rowCount * TL_ROW + 2}L${cx - half / 4} 0M${cx + half / 4} ${rowCount * TL_ROW + 2}L${cx + half} 0" fill="none" stroke-width="1.2"/>` +
         // The pause's length only where its break leaves the label room.
         (axis.gapW >= 18 ? `<text class="m" x="${cx}" y="${axisY}" text-anchor="middle" font-family="${FONT}" font-size="9.5">+${fmtTime(b.pause)}</text>` : '')
       )
@@ -1416,7 +1441,7 @@ const timelineSvg = (W: number, list: CrewRun[], at: number): { source: string; 
     `<text class="m" x="${barX}" y="${axisY}" font-family="${FONT}" font-size="10">0:00</text>` +
     `<text class="m" x="${barX + barW}" y="${axisY}" text-anchor="end" font-family="${FONT}" font-size="10">${fmtTime(axis.total)}</text>`
   const height = axisY + 4
-  return { source: svg(W, height, rows + breaks + ends, false), height }
+  return { source: svg(W, height, mainRow + rows + breaks + ends, false), height }
 }
 
 // --- frames: each section of the pane sits in a rounded box of its own.
@@ -1912,6 +1937,7 @@ const FIELDS: readonly Field[] = [
   { key: 'showTotals', group: 'sections', default: false },
   { key: 'showAgents', group: 'sections', default: true },
   { key: 'showTimeline', group: 'sections', default: true },
+  { key: 'timelineMain', group: 'sections', default: true },
   { key: 'showFiles', group: 'sections', default: true },
   { key: 'usageContext', group: 'usage', default: true },
   { key: 'usageFiveHour', group: 'usage', default: true },
@@ -1955,6 +1981,7 @@ const FIELD_TEXT = {
       showTotals: ['Kosten', 'Hauptchat und Subagenten getrennt, mit Tokens und Gesamtsumme'],
       showAgents: ['Subagenten', 'Laufende und fertige Subagenten, mit Details'],
       showTimeline: ['Zeitleiste', 'Wann welcher Agent lief, auf einer gemeinsamen Achse'],
+      timelineMain: ['Hauptchat in der Zeitleiste', 'Eine Zeile ganz oben, wann der Hauptchat gearbeitet hat'],
       showFiles: ['Dateien', 'Gelesene, geänderte und committete Dateien als Baum, mit Diff'],
       usageContext: ['Kontext', 'Wie voll das Kontextfenster der Session ist'],
       usageFiveHour: ['5-Stunden-Limit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
@@ -2003,6 +2030,7 @@ const FIELD_TEXT = {
       showTotals: ['Cost', 'Main chat and subagents apart, with tokens and a total'],
       showAgents: ['Subagents', 'Running and finished subagents, with details'],
       showTimeline: ['Timeline', 'When each agent ran, on one shared axis'],
+      timelineMain: ['Main chat in the timeline', 'A row at the top: when the main chat worked'],
       showFiles: ['Files', 'Files read, changed and committed, as a tree with diffs'],
       usageContext: ['Context', 'How full the session’s context window is'],
       usageFiveHour: ['5-hour limit', 'Use so far and time until it resets'],
@@ -2098,8 +2126,11 @@ export const register: Register = (on, options) => {
         const fresh = (await read($, files)).some(f => at - f.lastAt < FRESH_MS + 1000)
         const counts = tick % 30 === 0 && (await read($, usage)).limits.some(l => l.resetsAt)
         const isOpen = (tick % 10 === 0 || counts) && (await $.ui.panes()).some(p => p.id === PANE)
+        // The main chat's bar in the timeline grows while it works, every few seconds.
+        const lastTurn = tick % 5 === 0 && opts.showTimeline !== false && opts.timelineMain !== false ? (await read($, mainTurns)).at(-1) : undefined
+        const isMainBusy = Boolean(lastTurn && lastTurn.endedAt === undefined)
         // A reset's countdown moves where it shows: in the open pane, or in the band.
-        if (list.some(r => r.status === 'running') || fresh || (counts && (isOpen || opts.bandUsage === true))) await update($, now, () => at)
+        if (list.some(r => r.status === 'running') || fresh || isMainBusy || (counts && (isOpen || opts.bandUsage === true))) await update($, now, () => at)
         // While an agent runs, the pane redraws a few times a second: the crabs'
         // walk is a flip book of stills, one per redraw (CRAB_CSS in crab.ts).
         // Only where the crabs are pictures: the desktop pane, drawn of late.
@@ -2432,6 +2463,17 @@ export const register: Register = (on, options) => {
     return result
   })
 
+  // A turn of the main chat begins: its bar in the timeline. Only the main loop
+  // raises turn.start; a subagent's run begins with its spawn.
+  on('turn.start', async ($, e, next) => {
+    const result = await next(e)
+    const at = await $.clock.now()
+    // One left open (an end the mod did not hear) ends where the next begins.
+    await update($, mainTurns, list => [...list.map(t => (t.endedAt === undefined ? { ...t, endedAt: at } : t)), { startedAt: at }].slice(-MAX_MAIN_TURNS))
+    await update($, now, () => at)
+    return result
+  })
+
   // Each model request of a subagent: live context, tokens and cost, and what it said.
   on('turn.step', async function* ($, e, next) {
     const result = yield* next(e)
@@ -2487,6 +2529,15 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const agentId = e.agentId
+    // The main chat's turn ends: its bar stops here.
+    if (!agentId) {
+      const at = await $.clock.now()
+      const last = (await read($, mainTurns)).at(-1)
+      if (last && last.endedAt === undefined) {
+        await update($, mainTurns, l => l.map((t, i) => (i === l.length - 1 && t.endedAt === undefined ? { ...t, endedAt: at, reason: e.reason } : t)))
+        await update($, now, () => at)
+      }
+    }
     if (agentId && (await read($, runs)).some(r => r.agentId === agentId)) {
       const at = await $.clock.now()
       await update($, runs, list =>
@@ -3239,7 +3290,8 @@ export const register: Register = (on, options) => {
       )
 
       // --- the timeline, by the `showTimeline` option.
-      const showTimeline = opts.showTimeline !== false && list.length > 0
+      const turns = shownTurns(await read($, mainTurns))
+      const showTimeline = opts.showTimeline !== false && (list.length > 0 || turns.length > 0)
       const isAllHidden = !showUsage && !showTotals && !showAgents && opts.showTimeline === false && !showFiles
       const timelineToggle = (
         <Button
@@ -3314,7 +3366,7 @@ export const register: Register = (on, options) => {
             </Box>
           )
         }
-        const timeline = showTimeline && p.isTimelineOpen ? timelineSvg(W, list, at) : null
+        const timeline = showTimeline && p.isTimelineOpen ? timelineSvg(W, list, turns, at) : null
 
         // Compact folds the agents' frame alone: a row of crabs each for active and finished.
         const compact = compactSvg(W, list.filter(isActive), list.filter(r => !isActive(r)), null, at)
@@ -3438,33 +3490,56 @@ export const register: Register = (on, options) => {
         )
       }
 
-      // The timeline in text: one bar a run on a shared axis.
+      // The timeline in text: one bar a run on a shared axis, the main chat's turns
+      // in one row above them.
       const timelineRows = () => {
         const items = timelineRuns(list)
         const labelW = Math.min(18, Math.floor(cols * 0.35))
         const w = Math.max(8, cols - labelW - 2)
         // Pauses fold into a 3-cell break `┊`, as on the desktop.
-        const axis = timelineAxis(items, at, w, 3)
+        const axis = timelineAxis([...items, ...turns], at, w, 3)
         const breakCols = axis.breaks.map(b => Math.round(b.x) + 1)
-        const lineOf = (from: number, to: number, color: string) => {
-          const cells = [...Array(w)].map((_, c) => (breakCols.includes(c) ? '┊' : c >= from && c < to ? '━' : '·'))
-          return cells.map((ch, c) => (
-            <Text key={`c${c}`} color={ch === '━' ? color : undefined} dimColor={ch !== '━'}>
-              {ch}
-            </Text>
-          ))
+        const cellsOf = (s: { startedAt: number; endedAt?: number }): [number, number] => {
+          const from = Math.floor(axis.xOf(s.startedAt))
+          return [from, Math.max(from + 1, Math.round(axis.xOf(s.endedAt ?? at)))]
         }
-        return items.map(r => {
-          const from = Math.floor(axis.xOf(r.startedAt))
-          const to = Math.max(from + 1, Math.round(axis.xOf(r.endedAt ?? at)))
-          const name = oneLine(r.description || typeLabel(r), labelW).padEnd(labelW)
-          return (
-            <Text key={`tl-${r.id}`} wrap="truncate-end">
-              <Text dimColor>{name} </Text>
-              {lineOf(from, to, r.status === 'failed' ? 'red' : colorOf(r))}
-            </Text>
-          )
-        })
+        // Each cell a bar's colour where one of `spans` covers it.
+        const lineOf = (spans: { from: number; to: number; color: string }[]) =>
+          [...Array(w)].map((_, c) => {
+            const hit = breakCols.includes(c) ? undefined : spans.find(s => c >= s.from && c < s.to)
+            const ch = breakCols.includes(c) ? '┊' : hit ? '━' : '·'
+            return (
+              <Text key={`c${c}`} color={hit?.color} dimColor={!hit}>
+                {ch}
+              </Text>
+            )
+          })
+        const main = turns.length
+          ? [
+              <Text key="tl-main" wrap="truncate-end">
+                <Text dimColor>{oneLine(s.main, labelW).padEnd(labelW)} </Text>
+                {lineOf(
+                  turns.map(t => {
+                    const [from, to] = cellsOf(t)
+                    return { from, to, color: t.reason === 'error' || t.reason === 'refusal' ? 'red' : CLAY }
+                  }),
+                )}
+              </Text>,
+            ]
+          : []
+        return [
+          ...main,
+          ...items.map(r => {
+            const [from, to] = cellsOf(r)
+            const name = oneLine(r.description || typeLabel(r), labelW).padEnd(labelW)
+            return (
+              <Text key={`tl-${r.id}`} wrap="truncate-end">
+                <Text dimColor>{name} </Text>
+                {lineOf([{ from, to, color: r.status === 'failed' ? 'red' : colorOf(r) }])}
+              </Text>
+            )
+          }),
+        ]
       }
 
       const meterRow = (m: Meter) => {

@@ -177,6 +177,65 @@ test('showUsage off hides the usage section', { options: { showUsage: false } },
   expect(await ui.find({ text: /Kontext/ })).toBeUndefined()
 })
 
+// A turn of the main chat, `ms` long: the main loop alone raises turn.start.
+async function mainTurn($: Engine, clock: { advance: (ms: number) => Promise<unknown> }, id: string, ms: number, reason = 'answer') {
+  await $.turn.start({ text: 'Mach weiter', turnId: id } as never)
+  await clock.advance(ms)
+  await $.turn.complete({ reason, answer: 'Erledigt.', turnId: id } as never)
+}
+
+// The timeline section of what a surface draws now.
+const timelineOf = async ($: Engine, surface: Surface) => {
+  const ui = await mount($, surface)
+  let out = ''
+  JSON.stringify(await ui.drawn(), (_k, v) => {
+    if (v && typeof v === 'object' && v.props?.key === 'sec-timeline') out = JSON.stringify(v)
+    return v
+  })
+  await ui.unmount()
+  return out
+}
+
+test("the timeline shows the main chat's turns in a row of their own, above the subagents", async ($, on) => {
+  const { clock } = engine(on)
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  await start($)
+  await mainTurn($, clock, 't1', 30_000)
+  await clock.advance(5_000)
+  // Without a subagent the timeline is there already, for the main chat alone.
+  for (const surface of SURFACES) {
+    const tl = await timelineOf($, surface)
+    expect(tl).toContain('Hauptchat')
+    expect(tl).toContain('#D97757')
+  }
+  await $.turn.start({ text: 'Und die Tests', turnId: 't2' } as never)
+  await spawn($, 'Tests schreiben', 'general-purpose')
+  await clock.advance(20_000)
+  for (const surface of SURFACES) {
+    const tl = await timelineOf($, surface)
+    // The main chat first, then the agent.
+    expect(tl.indexOf('Hauptchat')).toBeGreaterThanOrEqual(0)
+    expect(tl.indexOf('Hauptchat')).toBeLessThan(tl.indexOf('Tests schreiben'))
+  }
+  // Two turns, the second still open: two bars in the row, on the desktop.
+  const desk = await timelineOf($, 'desktop')
+  expect(desk.match(/fill=\\"#D97757\\" opacity=\\"0.9\\"/g)?.length).toBe(2)
+})
+
+test('the main chat leaves the timeline with timelineMain off', { options: { timelineMain: false } }, async ($, on) => {
+  const { clock } = engine(on)
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  await start($)
+  await mainTurn($, clock, 't1', 30_000)
+  for (const surface of SURFACES) expect(await timelineOf($, surface)).toBe('')
+  await spawn($, 'Tests schreiben', 'general-purpose')
+  for (const surface of SURFACES) {
+    const tl = await timelineOf($, surface)
+    expect(tl).toContain('Tests schreiben')
+    expect(tl).not.toContain('Hauptchat')
+  }
+})
+
 test('every type its own colour and costume; savvy types wear the cap like any other', async ($, on) => {
   engine(on)
   await start($)
@@ -871,7 +930,8 @@ test('under All an untouched file has no sign and a bright name, apart from the 
   const row = (await rowOf(ui, '/work/src/idle.ts')) as { left: { t: string; dim?: boolean }[] } | undefined
   expect(row?.left.map(s => s.t).join('')).toBe('    idle.ts')
   expect(row?.left.find(s => s.t === 'idle.ts')?.dim).toBeUndefined()
-  expect((await rowOf(ui, 'dir:/src'))?.left[0]?.dim).toBe(true)
+  const folder = (await rowOf(ui, 'dir:/src')) as { left: { dim?: boolean }[] } | undefined
+  expect(folder?.left[0]?.dim).toBe(true)
 })
 
 test('a shut folder counts the files inside it by state and shows their agents', async ($, on) => {

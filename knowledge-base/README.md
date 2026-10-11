@@ -69,6 +69,7 @@ Rules:
 - [tokens-new-vs-cached](decisions/tokens-new-vs-cached.md): new = input + output + cache writes, cached reads apart; one sum was misleading
 - [crab-flip-book](decisions/crab-flip-book.md): desktop crabs walk as stills redrawn 4×/s while agents run; `crabMotion` light = 1×/s (user)
 - [agent-bar-estimate](decisions/agent-bar-estimate.md): row bar estimates from time and steps up to 90 %; savvy `step` reports fill it for real; green/red/grey at the end (user)
+- [timeline-main-chat](decisions/timeline-main-chat.md): main chat's turns in a row atop the timeline, `turn.start` to `turn.complete`; `timelineMain` (user)
 - [agent-type-look](decisions/agent-type-look.md): a colour per type, new ones kept in the store; detective for general-purpose; no savvy crabs; no forced type (user)
 - [agent-bar-no-made-up-progress](decisions/agent-bar-no-made-up-progress.md): superseded; a moving band instead of a fill, found too restless
 

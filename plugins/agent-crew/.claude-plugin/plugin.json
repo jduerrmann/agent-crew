@@ -1,6 +1,6 @@
 {
   "name": "agent-crew",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "One pane for every subagent (tabs, details, timeline), the files they read, changed and committed (history, diffs, conflicts), and the session's usage.",
   "author": { "name": "jduerrmann", "url": "https://github.com/jduerrmann" },
   "homepage": "https://github.com/jduerrmann/agent-crew",
@@ -30,6 +30,12 @@
       "type": "boolean",
       "title": "Show the timeline",
       "description": "A timeline under the subagents: when each one ran, on one shared time axis",
+      "default": true
+    },
+    "timelineMain": {
+      "type": "boolean",
+      "title": "Timeline: main chat",
+      "description": "A row at the top of the timeline: when the main chat worked, each turn a bar",
       "default": true
     },
     "showAgents": {

@@ -11,6 +11,9 @@ import type { On } from 'claude-code'
 // the scenes still have to draw: a picture that breaks shows here first.
 const RENDER = false
 
+// The sandbox has a console; the mod's types (no DOM) do not know it.
+declare const console: { log: (line: string) => void }
+
 /** Columns of the pane; the pictures come out this × 8 + 32 px wide. */
 const COLS = 103
 const WIDTH = COLS * 8 + 32
@@ -51,6 +54,7 @@ function world(on: On, git: (args: string[]) => { exitCode: number; stdout: stri
   on('command.register', () => ({ value: {} }) as never)
   on('config.list', () => ({ value: [] }))
   on('tool.call', () => ({ result: 'ok' }) as never)
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_$, e) => ({ text: '', usage: e.usage }))
   on('session.measure', (_$, e) => ({ changed: e.changed }))
   on('turn.step', async function* (_$, e) {
@@ -85,6 +89,9 @@ async function steps($: Engine, w: ReturnType<typeof world>, agentId: string | u
 }
 
 const tool = ($: Engine, t: Record<string, unknown>) => $.tool.call(t as never)
+// A turn of the main chat begins, or ends.
+const turnStart = ($: Engine, turnId: string) => $.turn.start({ text: 'Go on', turnId } as never)
+const turnEnd = ($: Engine, turnId: string) => $.turn.complete({ reason: 'answer', answer: 'Done.', turnId } as never)
 const done = ($: Engine, agentId: string, answer = 'Done.', reason = 'answer') => $.turn.complete({ agentId, reason, answer, turnId: `t-${agentId}` } as never)
 
 const mount = ($: Engine, requestId = 'agent-crew') =>
@@ -141,7 +148,8 @@ function teamGit() {
 
 async function team($: Engine, w: ReturnType<typeof world>, git: ReturnType<typeof teamGit>) {
   await start($)
-  // The main chat's own requests, for the cost section.
+  // The main chat's first turn, and its own requests for the cost section.
+  await turnStart($, 'm1')
   await steps($, w, undefined, 6, { input_tokens: 2400, output_tokens: 1800, cache_read_input_tokens: 340_000, cache_creation_input_tokens: 4000 })
   // A guide answered a question early on.
   await spawn($, { description: 'Check the hooks API', type: 'claude-code-guide' })
@@ -152,8 +160,10 @@ async function team($: Engine, w: ReturnType<typeof world>, git: ReturnType<type
   await spawn($, { description: 'review: error handling', type: 'general-purpose', workflow: 0 })
   await steps($, w, 'a2', 2, { input_tokens: 1200, output_tokens: 400, cache_read_input_tokens: 25_000 }, 'claude-sonnet-5-5')
   await done($, 'a2', '', 'error')
+  await turnEnd($, 'm1')
   await w.clock.advance(MIN)
-  // Explore scouts the auth module; the refactor starts beside it.
+  // The second turn, still at work: Explore scouts the auth module, the refactor starts beside it.
+  await turnStart($, 'm2')
   await spawn($, { description: 'Map the auth module', type: 'Explore', prompt: 'Find where tokens are created, refreshed and stored in src/auth.' })
   await tool($, { tool: 'Read', file_path: '/work/src/legacy/cookies.ts', agentId: 'a3' })
   await steps($, w, 'a3', 4, { input_tokens: 1500, output_tokens: 600, cache_read_input_tokens: 41_000 }, 'claude-haiku-5-5')
@@ -285,11 +295,17 @@ test('media: timeline.svg, two rounds with a pause folded between', { options: {
   const w = world(on)
   await start($)
   const round = async (from: number, agents: [string, string, number, number][]) => {
-    // [description, type, start, length] in seconds from the round's start.
-    const events = agents.flatMap(([d, t, s, l], i) => [
-      { at: s, run: () => spawn($, { description: d, type: t }) },
-      { at: s + l, run: () => done($, `a${from + i}`) },
-    ])
+    // [description, type, start, length] in seconds from the round's start;
+    // the main chat's turn spans the round and a little more.
+    const last = Math.max(...agents.map(([, , s, l]) => s + l))
+    const events = [
+      { at: 0, run: () => turnStart($, `m${from}`) },
+      ...agents.flatMap(([d, t, s, l], i) => [
+        { at: s, run: () => spawn($, { description: d, type: t }) },
+        { at: s + l, run: () => done($, `a${from + i}`) },
+      ]),
+      { at: last + 25, run: () => turnEnd($, `m${from}`) },
+    ]
     events.sort((a, b) => a.at - b.at)
     let now = 0
     for (const e of events) {

@@ -49,6 +49,9 @@ export type CrewLog = {
 
 export type CrewTab = 'active' | 'done'
 
+/** One turn of the main chat, from `turn.start` to its `turn.complete`; open while it runs. */
+export type CrewMainTurn = { startedAt: number; endedAt?: number; reason?: 'answer' | 'aborted' | 'refusal' | 'error' }
+
 export type CrewPanel = {
   tab: CrewTab
   expanded: string[]
@@ -172,6 +175,8 @@ declare module 'claude-code' {
       tree: { root: string; paths: string[] } | null
       /** The colour each agent type outside Claude Code's own was given when first seen, by lower-case bare type. */
       typeColors: Record<string, string>
+      /** The main chat's turns, oldest first, for the timeline: when each began and ended, and how. */
+      mainTurns: CrewMainTurn[]
     }
   }
 }

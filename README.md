@@ -6,12 +6,12 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Claude_Code-mod-D97757" alt="Claude Code mod">
-  <img src="https://img.shields.io/badge/version-0.7.0-378ADD" alt="Version 0.7.0">
+  <img src="https://img.shields.io/badge/version-0.8.0-378ADD" alt="Version 0.8.0">
   <img src="https://img.shields.io/badge/license-PolyForm_Noncommercial-22c55e" alt="PolyForm Noncommercial license">
 </p>
 
 <p align="center">
-  <img src="media/panel.svg" alt="The agent-crew panel: usage rings, the cost of main chat and subagents, running subagents as crabs with their bars, one nested under another, a timeline, and a file tree coloured by what was read, changed, added, committed and deleted, with a conflict on tokens.ts" width="860">
+  <img src="media/panel.svg" alt="The agent-crew panel: usage rings, the cost of main chat and subagents, running subagents as crabs with their bars, one nested under another, a timeline with the main chat on top, and a file tree coloured by what was read, changed, added, committed and deleted, with a conflict on tokens.ts" width="860">
 </p>
 
 ## Contents
@@ -48,7 +48,7 @@ The pane is built from framed sections. Each one can be switched on or off in th
 | [Usage](#usage) | Context fill, 5-hour and weekly limit | On |
 | [Cost](#cost) | Main chat and subagents separately, with a total | Off |
 | [Subagents](#subagents) | Every agent in *Active* and *Finished* tabs, with details | On |
-| [Timeline](#timeline) | When each agent ran | On |
+| [Timeline](#timeline) | When the main chat worked and each agent ran | On |
 | [Files](#files) | Files read, changed and committed, with diffs | On |
 
 ## Install
@@ -123,10 +123,11 @@ The section is off by default. Costs are estimated from token counts and a price
 ### Timeline
 
 <p align="center">
-  <img src="media/timeline.svg" alt="Timeline: six agents as bars in their types' colours on one axis, two rounds of work with a folded pause of 1 hour 20 minutes between them" width="860">
+  <img src="media/timeline.svg" alt="Timeline: the main chat's two turns in a row at the top, six agents as bars in their types' colours below, two rounds of work with a folded pause of 1 hour 20 minutes between them" width="860">
 </p>
 
 - **One time axis** for all agents: which ran when, and which ran in parallel.
+- **The main chat** in a row at the top: each of its turns a bar in Claude's colour, red when a turn failed and faint when it was interrupted. `timelineMain` turns the row off.
 - **Folded pauses:** any stretch longer than 90 seconds without a running agent is folded into a labelled break, so rounds of work an hour apart keep readable bars.
 
 ### Files
@@ -171,7 +172,7 @@ A click on the band opens the pane. When a survey needs the band, the band steps
 ## Settings
 
 <p align="center">
-  <img src="media/settings.svg" alt="Settings pane: a Sections group with switches for Usage, Cost, Subagents, Timeline and Files, a Usage group with Context, 5-hour limit and Weekly limit, and an Above the prompt group with Crew line, Progress, Usage and Status line" width="860">
+  <img src="media/settings.svg" alt="Settings pane: a Sections group with switches for Usage, Cost, Subagents, Timeline, Main chat in the timeline and Files, a Usage group with Context, 5-hour limit and Weekly limit, and an Above the prompt group with Crew line, Progress, Usage and Status line" width="860">
 </p>
 
 Open the settings with `/crew-settings` or the *Settings* button at the top of the pane. They are grouped into *Sections*, *Usage*, *Above the prompt*, *General* and *Notifications*, followed by *Version*; every change applies immediately. The pane writes the same values as `/config`; they can also be set in `~/.claude/settings.json`:
@@ -186,6 +187,7 @@ Open the settings with `/crew-settings` or the *Settings* button at the top of t
 | `showTotals` | `false` | Cost section: main chat and subagents separately, new and cached tokens, and the total. |
 | `showAgents` | `true` | Subagents section. |
 | `showTimeline` | `true` | Timeline section. |
+| `timelineMain` | `true` | The main chat's turns in a row at the top of the timeline. |
 | `showFiles` | `true` | Files section. |
 | `usageContext` | `true` | Context meter in the usage section. |
 | `usageFiveHour` | `true` | 5-hour limit in the usage section. |
