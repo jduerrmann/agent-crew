@@ -21,6 +21,6 @@ updated: 2026-10-11
 
 See `hooks/files.ts` (normalising) and `types/index.d.ts` (the folded key).
 
-**Known gap, left on purpose:** on macOS and Linux, a file outside the repository such as `/etc/hosts` lands in a repo folder `etc/` of the same name. A clean fix touches five places, and Windows is not affected.
+**Known gap, left on purpose:** on macOS and Linux, a file outside the repository such as `/etc/hosts` lands in a repo folder `etc/` of the same name. A clean fix touches five places, and Windows is not affected. Planned in [posix-absolute-paths](../plans/backlog/posix-absolute-paths.md).
 
 **Re-check when:** never. This is how the platforms behave.

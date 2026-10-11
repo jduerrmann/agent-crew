@@ -6,7 +6,8 @@ What the mod platform and the environment don't allow, and why agent-crew is bui
 
 - **`limits/`**: one note per thing that isn't possible or isn't reliable. Each says why, what the code does instead, and when to check again. `status: active | lifted`, `verified:` with the date it was last confirmed.
 - **`decisions/`**: one note per choice between real alternatives. Each gives the context, the decision, what lost and what follows. `decided-by: user | agreed | agent`. A replaced decision gets `status: superseded` and a link to its successor; it is never rewritten.
-- **`templates/`**: start new notes from these.
+- **`plans/`**: one plan per topic to build. `plans/active/` holds what the user wants built, in `priority:` order; `plans/backlog/` holds what is only noted. A finished plan is deleted once its outcome is a decision or a limit ([plans-in-knowledge-base](decisions/plans-in-knowledge-base.md)).
+- **`templates/`**: start new notes and plans from these.
 
 Rules:
 - One topic per note. File names are kebab-case claims with no dates.
@@ -76,11 +77,34 @@ Rules:
 - [repo-name](decisions/repo-name.md): repo and marketplace `agent-crew`, local folder stays `claude-mods`; commits as jduerrmann
 - [privacy-before-push](decisions/privacy-before-push.md): README images rendered from made-up data; check the diff for personal data before a push
 - [review-and-verification](decisions/review-and-verification.md): check review findings against the code; every fix brings a regression test
+- [plans-in-knowledge-base](decisions/plans-in-knowledge-base.md): ideas live as plans, active or backlog, one per topic; deleted once done
+- [no-token-cost](decisions/no-token-cost.md): the mod never calls a model; no summaries or other features that spend tokens (user)
+
+## Plans
+
+Read a plan, the notes it links and the code it points to before starting; check its pointers against the code first.
+
+### Active, in order
+1. [folder-counters](plans/active/folder-counters.md): shut folders show counts by state (✎3 +1 ⚠1) and the agents' dots, as filetree's (S)
+2. [agent-progress-bar](plans/active/agent-progress-bar.md): the row bar is context fill and jumps to full at the end; show activity and steps instead (S)
+3. [prompt-band](plans/active/prompt-band.md): a band above the prompt with crew status, progress and usage, each line optional; status line switchable (M)
+4. [agent-rows-and-stop](plans/active/agent-rows-and-stop.md): click anywhere on an agent's row; ■ stops a subagent (spike: turn.abort, TaskStop, deny) (M)
+5. [burn-rate](plans/active/burn-rate.md): forecast when a limit runs out at the current pace; optional cost limit per agent (M)
+6. [file-lock](plans/active/file-lock.md): optional lock refuses a second agent's edit of a file another running agent is changing (M)
+
+### Backlog
+- [review-per-agent](plans/backlog/review-per-agent.md): an agent's changes in its details, to stage or discard (L)
+- [keyboard-control](plans/backlog/keyboard-control.md): arrows, Enter, o, c, /, 1–3 in the file rows and agent rows (M)
+- [copy-path-and-prompt](plans/backlog/copy-path-and-prompt.md): copy a file's path or put `@path` into the prompt; suggest a commit (S)
+- [filters-since-and-agent-chips](plans/backlog/filters-since-and-agent-chips.md): filter to this round or since the last commit; a chip per agent (M)
+- [open-with-and-preview](plans/backlog/open-with-and-preview.md): open in the person's editor at the changed line; Markdown preview in the card (M)
+- [readme-images-refresh](plans/backlog/readme-images-refresh.md): redraw the README pictures for today's files section and settings (S)
+- [posix-absolute-paths](plans/backlog/posix-absolute-paths.md): on macOS and Linux, `/etc/hosts` stops merging into a repo folder `etc/` (M)
 
 ## Open questions
 
 Never checked; check them before building on them, then turn the answer into a limit or a decision.
 
-- Can a mod stop a subagent, or send a message to one that is waiting? Needed for a stop button in the pane.
+- Can a mod stop a subagent, or send a message to one that is waiting? Needed for a stop button in the pane; the spike is step 1 of [agent-rows-and-stop](plans/active/agent-rows-and-stop.md).
 - Does the update button work end to end against a real `claude`? The tests mock the command.
 - Do mods load in WSL sessions of the desktop app? filetree's README says no.
