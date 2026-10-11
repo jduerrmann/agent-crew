@@ -1,6 +1,6 @@
 {
   "name": "agent-crew",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "One pane for every subagent (tabs, details, timeline), the files they read, changed and committed (history, diffs, conflicts), and the session's usage.",
   "author": { "name": "jduerrmann", "url": "https://github.com/jduerrmann" },
   "homepage": "https://github.com/jduerrmann/agent-crew",
