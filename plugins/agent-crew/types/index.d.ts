@@ -58,6 +58,8 @@ export type CrewPanel = {
   openFile?: string
   /** Folders of the file tree shut by a press. */
   shutDirs?: string[]
+  /** The folder the file tree shows (`src/auth`), entered by a double press; absent, the whole tree. */
+  fileRoot?: string
   /** What the search line above the file tree holds. */
   fileQuery?: string
   /** Whether the search line holds the keys, as far as the hooks can tell. */

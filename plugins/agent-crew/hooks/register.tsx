@@ -6,7 +6,7 @@ import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewPanel, Crew
 import { CLAY, FONT, crab, fitText, svg, textWidth, xml } from './crab'
 import type { FileRowSpec, FileRowsProps, Seg } from './filerows'
 import type { SearchBoxProps } from './searchbox'
-import { applyNumstat, inside, keyOf, mayChange, openCommand, parseStatus, posix, readTargets, resolve, treeRows, useDrives, visibleRows } from './files'
+import { applyNumstat, folderOf, inside, keyOf, mayChange, openCommand, parseStatus, posix, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
 import type { TreeRow } from './files'
 import type { Tab, TabsProps } from './tabs'
 
@@ -1200,7 +1200,7 @@ async function openFirstHit($: EngineInterface, text: string): Promise<void> {
   if (!q) return
   const g = await read($, git)
   const p = await readPanel($)
-  const views = fileViews(await read($, files), g, g?.root ?? posix(await $.session.cwd()), p.fileFilter)
+  const views = underFolder(fileViews(await read($, files), g, g?.root ?? posix(await $.session.cwd()), p.fileFilter), p.fileRoot ?? '')
   const hit = treeRows(views.filter(v => v.label.toLowerCase().includes(q)).map(v => ({ key: v.key, label: v.label }))).find(r => !r.isDir)
   if (!hit) return
   await setPanel($, () => ({ openFile: hit.key, fileQuery: text }))
@@ -1214,19 +1214,22 @@ async function toggleCard($: EngineInterface, key: string): Promise<void> {
   if (opening) await loadDiff($, key)
 }
 
-// A press on a row of the tree: a folder shuts or opens, a file its card, and a
-// second press on the same file soon after opens the file itself.
+// A press on a row of the tree: a folder shuts or opens, a file its card. A
+// second press on the same row soon after enters the folder (the breadcrumbs
+// lead back) or opens the file itself.
 async function pressRow($: EngineInterface, id: string): Promise<void> {
+  const at = await $.clock.now()
+  const isDouble = lastPress.key === id && at - lastPress.at < DOUBLE_MS
+  lastPress = { key: isDouble ? '' : id, at }
   if (id.startsWith('dir:')) {
     await setPanel($, q => {
       const shut = q.shutDirs ?? []
+      // The first press of the two shut the folder: entering it opens it again.
+      if (isDouble) return { fileRoot: folderOf(id), shutDirs: shut.filter(k => k !== id), openFile: undefined }
       return { shutDirs: shut.includes(id) ? shut.filter(k => k !== id) : [...shut, id] }
     })
     return
   }
-  const at = await $.clock.now()
-  const isDouble = lastPress.key === id && at - lastPress.at < DOUBLE_MS
-  lastPress = { key: isDouble ? '' : id, at }
   if (!isDouble) {
     await toggleCard($, id)
     return
@@ -1964,9 +1967,14 @@ export const register: Register = (on, options) => {
 
     // --- the files section.
     // The search line narrows the tree to the paths that hold what was typed.
+    // A folder entered by a double press narrows it to that folder, labels relative.
     const query = (p.fileQuery ?? '').trim().toLowerCase()
-    const allViews = fileViews(fileList, g, base, p.fileFilter)
+    const root = p.fileRoot ?? ''
+    const allViews = underFolder(fileViews(fileList, g, base, p.fileFilter), root)
     const views = query ? allViews.filter(v => v.label.toLowerCase().includes(query)) : allViews
+    const treeAll = rowsUnder(views.map(v => ({ key: v.key, label: v.label })), root)
+    const dirKeys = treeAll.filter(r => r.isDir).map(r => r.key)
+    const isAllShut = dirKeys.length > 0 && dirKeys.every(k => (p.shutDirs ?? []).includes(k))
     const branch = g ? `⑂ ${g.branch || 'HEAD'}${g.ahead ? ` ↑${g.ahead}` : ''}${g.behind ? ` ↓${g.behind}` : ''}` : ''
     const focusRun = p.focusAgent ? byAgent.get(p.focusAgent) : undefined
     const filesHeader = (
@@ -1983,14 +1991,56 @@ export const register: Register = (on, options) => {
           plain
           onPress={() => setPanel($, q => ({ fileFilter: q.fileFilter === 'all' ? 'changed' : 'all' }))}
         />
-        {branch && <Text dimColor>{branch}</Text>}
         {focusRun && (
           <Button key="focus-clear" plain onPress={() => setPanel($, () => ({ focusAgent: undefined }))}>
             <Text color={colorOf(focusRun)}>◎ {oneLine(focusRun.description || typeLabel(focusRun), 30)}</Text> ✕
           </Button>
         )}
+        <Box flexGrow={1} />
+        {!p.isFilesCollapsed && dirKeys.length > 0 && (
+          <Button
+            key="files-shut-all"
+            label={isAllShut ? '⊞' : '⊟'}
+            plain
+            dimColor
+            onPress={() =>
+              setPanel($, q => {
+                const shut = (q.shutDirs ?? []).filter(k => !dirKeys.includes(k))
+                return { shutDirs: isAllShut ? shut : [...shut, ...dirKeys] }
+              })
+            }
+          />
+        )}
+        <Button key="files-refresh" label="↻" plain dimColor onPress={() => syncGit($)} />
       </Box>
     )
+
+    // Breadcrumbs under the search line, the main folder first and the branch
+    // last: a heading, so it reads larger than the rows. Once a folder is
+    // entered, the steps above it are links (the folder's own file: URL) back up.
+    const crumbs = root.split('/').filter(Boolean)
+    const folderUrl = (tree: string): string => {
+      const abs = !tree ? base : tree.startsWith('~') ? home + tree.slice(1) : /^[A-Za-z]:/.test(tree) || base === '' ? tree : `${base}/${tree}`
+      return encodeURI(`file:///${abs.replace(/^\//, '')}`)
+    }
+    const steps = [{ label: `⌂ ${base.split('/').pop() || base}`, tree: '' }, ...crumbs.map((c, i) => ({ label: c, tree: crumbs.slice(0, i + 1).join('/') }))]
+    const crumbLinks = steps.slice(0, -1).map(st => ({ ...st, href: folderUrl(st.tree) }))
+    const crumbText =
+      [...crumbLinks.map(st => `[${st.label.replace(/[[\]]/g, '')}](${st.href})`), `**${steps.at(-1)?.label ?? ''}**`].join(' › ') +
+      (branch ? `  \`${branch}\`` : '')
+    const Md = 'Markdown' in ui ? ui.Markdown : undefined
+    const crumbRow =
+      !p.isFilesCollapsed && Md ? (
+        <Md
+          key="files-crumbs"
+          text={`#### ${crumbText}`}
+          pressableLinks={crumbLinks.map(st => st.href)}
+          onLinkPress={(link: { href: string }) => {
+            const st = crumbLinks.find(x => x.href === link.href)
+            if (st) void setPanel($, () => ({ fileRoot: st.tree || undefined, openFile: undefined }))
+          }}
+        />
+      ) : null
 
     // The search line: on the cell grid where the surface has a Client, the
     // frame's whole width and no button; elsewhere the surface's own field. Enter
@@ -2026,7 +2076,7 @@ export const register: Register = (on, options) => {
     const desktopW = Math.max(220, Math.min(900, ((e.props.bodyColumns || 40) - FRAME_COLS) * 8 - 8))
 
     // One file row is one Button: a press opens its history and diff beneath it.
-    const fileTree = visibleRows(treeRows(views.map(v => ({ key: v.key, label: v.label }))), new Set(p.shutDirs ?? []))
+    const fileTree = visibleRows(treeAll, new Set(p.shutDirs ?? []))
     const viewByKey = new Map(views.map(v => [v.key, v]))
     const openDiff = await read($, diff)
     const fileDetails = (v: FileView, pad: string) => {
@@ -2283,6 +2333,7 @@ export const register: Register = (on, options) => {
             <Box key="sec-files" {...FRAME}>
               {filesHeader}
               {searchRow}
+              {crumbRow}
               {filesBody}
             </Box>
           )}
@@ -2500,6 +2551,7 @@ export const register: Register = (on, options) => {
           <Box key="sec-files" {...FRAME}>
             {filesHeader}
             {searchRow}
+            {crumbRow}
             {filesBody}
           </Box>
         )}

@@ -397,7 +397,7 @@ test("a press opens a file's card, a double press the file itself", async ($, on
 })
 
 test('a folder shuts and opens on a press', async ($, on) => {
-  engine(on)
+  const { clock } = engine(on)
   await start($)
   await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
   await $.tool.call({ tool: 'Read', file_path: '/work/README.md' } as never)
@@ -406,8 +406,10 @@ test('a folder shuts and opens on a press', async ($, on) => {
     await clickRow(ui, 'rows-a', 0)
     expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
     expect(await hasRow(ui, '/work/README.md')).toBe(true)
+    await clock.advance(1000)
     await clickRow(ui, 'rows-a', 0)
     expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+    await clock.advance(1000)
   }
 })
 
@@ -427,4 +429,33 @@ test('the search field loses its focus when the prompt or another button takes t
   expect(await isFocused()).toBe(true)
   await ui.press({ key: 'files-filter' })
   expect(await isFocused()).toBe(false)
+})
+
+test('a double press enters a folder, the breadcrumbs lead back, ⊟ shuts them all', async ($, on) => {
+  const { clock } = engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/auth/tokens.ts' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/README.md' } as never)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    // src/ is row 0: two presses close together enter it.
+    await clickRow(ui, 'rows-a', 0)
+    await clickRow(ui, 'rows-a', 0)
+    expect(await hasRow(ui, '/work/README.md')).toBe(false)
+    expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+    // The breadcrumbs: a heading under the search line, each step a link.
+    const crumbs = JSON.stringify(await ui.drawn())
+    expect(crumbs).toContain('#### [⌂ work](file:///work) › **src**')
+    // ⊟ shuts every folder in view; ⊞ opens them again.
+    await ui.press({ key: 'files-shut-all' })
+    expect(await hasRow(ui, '/work/src/auth/tokens.ts')).toBe(false)
+    await ui.press({ key: 'files-shut-all' })
+    expect(await hasRow(ui, '/work/src/auth/tokens.ts')).toBe(true)
+    await ui.press({ key: 'files-crumbs', link: { href: 'file:///work' } })
+    expect(await hasRow(ui, '/work/README.md')).toBe(true)
+    // Back at the top the main folder stays, as the current step.
+    expect(JSON.stringify(await ui.drawn())).toContain('#### **⌂ work**')
+    await clock.advance(1000)
+  }
 })

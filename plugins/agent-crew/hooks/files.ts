@@ -273,6 +273,25 @@ export function treeRows(entries: { key: string; label: string }[]): TreeRow[] {
   return rows
 }
 
+/** The entries under `folder` (a tree path such as `src/auth`), labelled relative to it; `''` keeps them all. */
+export function underFolder<V extends { label: string }>(entries: V[], folder: string): V[] {
+  if (!folder) return entries
+  const pre = `${folder}/`
+  return entries.flatMap(v => {
+    const label = v.label.replace(/^\//, '')
+    return label.startsWith(pre) ? [{ ...v, label: label.slice(pre.length) }] : []
+  })
+}
+
+/** The tree of a folder's entries, its folders keyed by their whole path (`dir:/src/auth`). */
+export function rowsUnder(entries: { key: string; label: string }[], folder: string): TreeRow[] {
+  const rows = treeRows(entries)
+  return folder ? rows.map(r => (r.isDir ? { ...r, key: `dir:/${folder}${r.key.slice('dir:'.length)}` } : r)) : rows
+}
+
+/** The tree path a folder row stands for: `dir:/src/auth` is `src/auth`. */
+export const folderOf = (key: string): string => key.replace(/^dir:\/?/, '')
+
 /** The rows a reader sees: nothing beneath a folder that is shut. */
 export function visibleRows(rows: TreeRow[], shut: ReadonlySet<string>): TreeRow[] {
   const out: TreeRow[] = []

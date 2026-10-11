@@ -136,7 +136,8 @@ A tree of every file the main chat or a subagent touched, plus every file git re
 - **Search:** the search line narrows the tree to matching paths; Enter opens the first hit.
 - **Agents:** coloured dots show which agents touched a file.
 - **Details:** clicking a file shows its history (who read, changed or committed it, and when) and its diff against `HEAD`, or its content if it is untracked.
-- **Open:** double-clicking a file, or *Open* in its details, opens it in the app your system uses for that kind of file. Clicking a folder collapses or expands it.
+- **Open:** double-clicking a file, or *Open* in its details, opens it in the app your system uses for that kind of file.
+- **Folders:** clicking a folder collapses or expands it; double-clicking it shows only that folder, with breadcrumbs above the tree to go back up. ⊟ collapses every folder in view (⊞ expands them again), ↻ reads git again.
 - **Conflicts:** when two agents change the same file within ten minutes, the file is marked and a notice appears. A commit resolves the mark.
 - **Changes only** hides files that were only read. The header shows the branch and how far it is ahead of or behind its upstream.
 
