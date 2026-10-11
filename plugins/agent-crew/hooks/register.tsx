@@ -2062,19 +2062,19 @@ export const register: Register = (on, options) => {
     const branch = g ? `⑂ ${g.branch || 'HEAD'}${g.ahead ? ` ↑${g.ahead}` : ''}${g.behind ? ` ↓${g.behind}` : ''}` : ''
     const focusRun = p.focusAgent ? byAgent.get(p.focusAgent) : undefined
     const filesHeader = (
-      <Box key="files-head" flexDirection="row" gap={1}>
+      <Box key="files-head" flexDirection="row" alignItems="center" gap={2} marginBottom={p.isFilesCollapsed ? 0 : 1}>
         <Button
           key="files-toggle"
           label={`${p.isFilesCollapsed ? '▸' : '▾'} ${s.files} · ${views.length}`}
           plain
           onPress={() => setPanel($, q => ({ isFilesCollapsed: !q.isFilesCollapsed }))}
         />
+        <Text dimColor>│</Text>
         {(['activity', 'changed', 'all'] as const).map(id => (
           <Button
             key={`files-filter-${id}`}
             label={s.fileFilters[id]}
-            plain
-            dimColor={p.fileFilter !== id}
+            variant={p.fileFilter === id ? 'primary' : 'secondary'}
             onPress={async () => {
               await setPanel($, () => ({ fileFilter: id }))
               // A press's own work ends with it: the list is read in a dispatch of its own.
@@ -2122,15 +2122,17 @@ export const register: Register = (on, options) => {
     const Md = 'Markdown' in ui ? ui.Markdown : undefined
     const crumbRow =
       !p.isFilesCollapsed && Md ? (
-        <Md
-          key="files-crumbs"
-          text={`#### ${crumbText}`}
-          pressableLinks={crumbLinks.map(st => st.href)}
-          onLinkPress={(link: { href: string }) => {
-            const st = crumbLinks.find(x => x.href === link.href)
-            if (st) void setPanel($, () => ({ fileRoot: st.tree || undefined, openFile: undefined }))
-          }}
-        />
+        <Box key="files-crumbs-box" marginY={1}>
+          <Md
+            key="files-crumbs"
+            text={`#### ${crumbText}`}
+            pressableLinks={crumbLinks.map(st => st.href)}
+            onLinkPress={(link: { href: string }) => {
+              const st = crumbLinks.find(x => x.href === link.href)
+              if (st) void setPanel($, () => ({ fileRoot: st.tree || undefined, openFile: undefined }))
+            }}
+          />
+        </Box>
       ) : null
 
     // The search line: on the cell grid where the surface has a Client, the
@@ -2165,6 +2167,18 @@ export const register: Register = (on, options) => {
 
     // About 8 CSS px a column on the desktop, less the frame's border and padding.
     const desktopW = Math.max(220, Math.min(900, ((e.props.bodyColumns || 40) - FRAME_COLS) * 8 - 8))
+
+    // A thin rule across the frame: drawn as a picture of its width on the
+    // desktop, whose lines are taller than a cell; as many dashes as cells elsewhere.
+    const RuleSvg = isDesktop && 'Svg' in ui ? ui.Svg : undefined
+    const ruleRow = (key: string) =>
+      RuleSvg ? (
+        <RuleSvg key={key} source={svg(desktopW, 9, `<line x1="0" y1="4.5" x2="${desktopW}" y2="4.5" stroke="#6b6b68" stroke-opacity=".6" stroke-width="1"/>`, false)} alt="—" width={desktopW} height={9} />
+      ) : (
+        <Text key={key} dimColor>
+          {'─'.repeat(Math.max(10, (e.props.bodyColumns || 40) - FRAME_COLS))}
+        </Text>
+      )
 
     // One file row is one Button: a press opens its history and diff beneath it.
     const fileTree = visibleRows(treeAll, shut)
@@ -2339,12 +2353,7 @@ export const register: Register = (on, options) => {
         {!p.isFilesCollapsed && views.length > 0 && (
           // Set off from the tree by a rule; each sign in the colour it marks.
           <Box key="files-legend" flexDirection="column" marginTop={1}>
-            {/* Cut by the box, not truncated: a truncated Text ends in an ellipsis. */}
-            <Box height={1} overflow="hidden">
-              <Text dimColor wrap="wrap">
-                {'─'.repeat(240)}
-              </Text>
-            </Box>
+            {ruleRow('files-rule')}
             <Text>
               {(
                 [
