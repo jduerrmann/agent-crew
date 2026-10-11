@@ -23,6 +23,22 @@ claude plugin test plugins/agent-crew
 - **Reporting:** say plainly whether a change was seen in the real app or only in tests.
 - **Live loading:** the user loads the working copy live ([load-from-working-copy](decisions/load-from-working-copy.md)), so edits show up in their sessions at once. Never edit an old copy under `~/.claude/dev-mods/`.
 
+## README pictures
+
+The pictures in `media/` come from `tests/media.test.ts`: each test plays a made-up session, mounts the desktop pane and lays out what it drew with `tests/render.ts`. Nothing comes from a real session ([privacy-before-push](decisions/privacy-before-push.md)).
+
+- **When:** a change the README's pictures show (a section, a sign, a colour, a button) redraws them in the same commit.
+- **How:**
+  1. Set `RENDER = true` in `tests/media.test.ts`.
+  2. Run the tests and write each `@@MEDIA <file> <svg>` line of the output to `media/<file>`:
+     ```powershell
+     claude plugin test plugins/agent-crew *> $env:TEMP\media.txt
+     foreach ($l in [IO.File]::ReadAllLines("$env:TEMP\media.txt")) { if ($l -match '^@@MEDIA (\S+) (.*)$') { [IO.File]::WriteAllText("media/$($Matches[1])", $Matches[2] + "`n") } }
+     ```
+  3. Set `RENDER = false` again, look at the pictures in light and dark, and check them for anything personal.
+- **Why the console:** a test runs in the hooks' sandbox, without `node:fs` or the environment, so it prints what it drew. Non-ASCII goes out as character references and each picture on one line, so the console carries it unharmed.
+- **The layout is an estimate:** `render.ts` mimics the desktop's flexbox at about 8 px a column ([no-pixel-width](limits/no-pixel-width.md)). The mod's own Svg pictures go in as they are, its crabs set walking.
+
 ## Release
 
 - **Version:** bump it in three places together: `plugins/agent-crew/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` and the badge at the top of `README.md`. The bump waits for the user's OK ([versioning](decisions/versioning.md)).

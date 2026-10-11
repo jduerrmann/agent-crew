@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="media/panel.svg" alt="The agent-crew panel: usage rings, the cost of main chat and subagents, running and finished subagents, a timeline with a folded pause, and a file tree coloured by what was read, changed and committed" width="860">
+  <img src="media/panel.svg" alt="The agent-crew panel: usage rings, the cost of main chat and subagents, running subagents as crabs with their bars, one nested under another, a timeline, and a file tree coloured by what was read, changed, added, committed and deleted, with a conflict on tokens.ts" width="860">
 </p>
 
 ## Contents
@@ -36,10 +36,10 @@
 `/crew` opens a single pane that follows everything the session's crew does. It records every subagent, whichever way it was started, and draws each one as a pixel crab in the costume of its type:
 
 <p align="center">
-  <img src="media/crew.svg" alt="Pixel crabs in costumes: a pirate for Explore, a hard hat for Plan, an astronaut for claude-code-guide, a cap, a chef for workflow agents, a racer for teammates, a detective" width="860">
+  <img src="media/crew.svg" alt="Seven pixel crabs in costumes, each in its type's colour: a pirate for Explore, a hard hat for Plan, a detective for general-purpose, an astronaut for claude-code-guide, a chef for workflow agents, a racer for teammates, and a cap for any other type" width="860">
 </p>
 
-A pirate for Explore, a hard hat for Plan, an astronaut for claude-code-guide, a detective for general-purpose, a chef for workflow agents, a racer for teammates, and a cap for every other type. Each type has a colour of its own: Claude Code's types a fixed one, any other type the next free one when it first shows up.
+Each type has a colour of its own: Claude Code's types a fixed one, any other type the next free one when it first shows up.
 
 The pane is built from framed sections. Each one can be switched on or off in the [settings](#settings):
 
@@ -87,7 +87,7 @@ Each meter can be hidden on its own in the *Usage* group of the settings.
 ### Cost
 
 <p align="center">
-  <img src="media/cost.svg" alt="Cost section: main chat 48k new and 2.1M cached tokens for about $2.31, six subagents 95k new and 2.9M cached for about $4.18, a bar splitting the total, and the total of about $6.49" width="860">
+  <img src="media/cost.svg" alt="Cost section: main chat 49k new and 2.0M cached tokens for about $0.80, six subagents 88k new and 973k cached for about $0.78, a bar splitting the total, and the total of about $1.59" width="860">
 </p>
 
 - **Main chat and subagents** separately, each with its estimated cost and its share of the total.
@@ -99,7 +99,7 @@ The section is off by default. Costs are estimated from token counts and a price
 ### Subagents
 
 <p align="center">
-  <img src="media/agents.svg" alt="Subagents section: Active and Finished tabs, a running Explore agent, an expanded general-purpose agent with its task and recent actions, a finished Plan agent nested under it, and a Clear finished button" width="860">
+  <img src="media/agents.svg" alt="Subagents section, Active tab: a running Explore agent, an expanded general-purpose agent with its task, recent actions and files, and a running Explore agent nested under it" width="860">
 </p>
 
 - **Coverage:** Agent-tool subagents of any type, forks, teammates, background agents, workflow agents, and nested agents under their parent.
@@ -110,16 +110,20 @@ The section is off by default. Costs are estimated from token counts and a price
 - **Notifications** when background or workflow agents finish, and whenever an agent fails or is stopped.
 - **Clear finished**, under the *Finished* tab, removes finished agents from the list. Their cost remains in the totals.
 
+<p align="center">
+  <img src="media/finished.svg" alt="Finished tab: a claude-code-guide agent done, a workflow review failed, a Plan agent done under its parent, each with a full bar, and the Clear finished button" width="860">
+</p>
+
 **Compact mode** folds the section into two rows of crabs, one for active and one for finished agents, with a badge for done, failed or stopped. The other sections are unaffected.
 
 <p align="center">
-  <img src="media/compact.svg" alt="Compact mode: a row of two walking crabs for the active agents, and a row of five dimmed crabs with badges for the finished ones" width="860">
+  <img src="media/compact.svg" alt="Compact mode: a row of three walking crabs for the active agents, and a row of four crabs with badges for done, failed and stopped" width="860">
 </p>
 
 ### Timeline
 
 <p align="center">
-  <img src="media/timeline.svg" alt="Timeline: six agents as bars on one axis, two rounds of work with a folded pause of 1 hour 20 minutes between them" width="860">
+  <img src="media/timeline.svg" alt="Timeline: six agents as bars in their types' colours on one axis, two rounds of work with a folded pause of 1 hour 20 minutes between them" width="860">
 </p>
 
 - **One time axis** for all agents: which ran when, and which ran in parallel.
@@ -128,28 +132,35 @@ The section is off by default. Costs are estimated from token counts and a price
 ### Files
 
 <p align="center">
-  <img src="media/files.svg" alt="Files section: a folder tree with tokens.ts open for a conflict, its history of who read and changed it, and its diff; session.ts read, index.ts committed, MIGRATION.md new" width="860">
+  <img src="media/files.svg" alt="Files section: tokens.ts open for a conflict between two agents, with its diff; index.ts committed, refresh.ts new, session.ts just read and shimmering; shut folders summing up a new file and a deleted one; the legend below" width="860">
 </p>
 
 A tree of every file the main chat or a subagent touched, plus every file git reports as changed:
 
-- **Read** (purple): from `Read`, `Grep` results and shell readers such as `cat`, `head`, `sed`, `rg` or `Get-Content`.
-- **Changed** (orange): with added and deleted lines from git, or *new* for untracked files.
-- **Committed** (green): with the short hash of the commit.
+- **Read** (purple ◉): from `Read`, `Grep` results and shell readers such as `cat`, `head`, `sed`, `rg` or `Get-Content`.
+- **Changed** (orange ✎): with added and deleted lines from git.
+- **New** (blue +): untracked, or staged as added and not yet committed.
+- **Committed** (green ✓): with the short hash of the commit.
+- **Deleted** (red ✗): gone from the working tree.
 - **Recent activity:** a file that was just read, changed or committed shimmers in its colour for a few seconds; its folders open while it does, and shut again afterwards unless you opened them.
 - **Search:** the search line narrows the tree to matching paths and opens the folders that hold them; Enter opens the first hit's details, × clears the line.
 - **Agents:** coloured dots show which agents touched a file (up to six). *Highlight its files* in an agent's details dims every other file; the `◎ agent ✕` chip in the header lifts it.
 - **Details:** clicking a file opens a card with its history (who read, changed or committed it, and when) and, when git sees changes, a second tab with its diff against `HEAD`, or its content if it is untracked.
 - **Open:** double-clicking a file, or *Open* in its details, opens it in the app your system uses for that kind of file.
-- **Folders:** folders start collapsed; clicking one expands or collapses it. Double-clicking a folder shows only that folder.
+- **Folders:** folders start collapsed; clicking one expands or collapses it. A collapsed folder sums up what is inside it, at any depth, in the legend's colours (`✎2 +1 ✗1 ◉3`), with conflicts and the agents' dots. Double-clicking a folder shows only that folder.
 - **Breadcrumbs:** under the search line, the main folder and the branch with how far it is ahead of or behind its upstream; once a folder is entered, the steps above it lead back up.
-- **Header:** `▾ Files · N` folds the section; ⊞ expands every folder in view (⊟ collapses them again), ↻ reads git again.
+- **Header:** `▾ Files · N` folds the section; ⊞ expands every folder in view (⊟ collapses them again). In a narrow pane the filters wrap to a second line. Git is read again after every change and every ten seconds while the pane is open.
 - **Conflicts:** when two agents change the same file within ten minutes, the file is marked and a notice appears. A commit resolves the mark.
-- **Filters:** *Activity* (the default) shows every file the session's agents read or changed, plus what git reports as changed; *Changes* only what was changed; *All* every file under the root besides, untouched ones drawn quiet (git's own list, or outside a repository a walk of at most 300 folders; 4000 files at most either way).
+- **Filters:** *Activity* (the default) shows what the session's agents read, changed or committed. *Changes* shows everything git reports as changed, whoever made it, including changes made by shell commands, which can't be traced to a file. *All* shows every file under the root besides, untouched ones without a sign (git's own list, or outside a repository a walk of at most 300 folders; 4000 files at most either way).
 
 ### Above the prompt
 
 A band above the prompt keeps the crew in view while the pane is closed. Each line has its own option in the settings group *Above the prompt*:
+
+<p align="center">
+  <img src="media/band.svg" alt="The band above the prompt: two of three running agents walking as crabs with their names and bars, +1 for the third, counts of running, done and failed agents and a conflict, and rings for context, the 5-hour and the weekly limit with a /compact button" width="860">
+</p>
+
 
 - **Crew** (on): on the desktop each running agent walks as its crab, followed by the finished and failed agents and conflicts. In the terminal, a pulsing dot in each running agent's colour stands in for its crab. It stays away until the first agent of the session.
 - **Progress** (off): each running agent's name and bar beside its crab, as in its row.
@@ -160,7 +171,7 @@ A click on the band opens the pane. When a survey needs the band, the band steps
 ## Settings
 
 <p align="center">
-  <img src="media/settings.svg" alt="Settings pane: a Sections group with switches for Usage, Cost, Subagents, Timeline and Files, and a Usage group with switches for Context, 5-hour limit and Weekly limit" width="860">
+  <img src="media/settings.svg" alt="Settings pane: a Sections group with switches for Usage, Cost, Subagents, Timeline and Files, a Usage group with Context, 5-hour limit and Weekly limit, and an Above the prompt group with Crew line, Progress, Usage and Status line" width="860">
 </p>
 
 Open the settings with `/crew-settings` or the *Settings* button at the top of the pane. They are grouped into *Sections*, *Usage*, *Above the prompt*, *General* and *Notifications*, followed by *Version*; every change applies immediately. The pane writes the same values as `/config`; they can also be set in `~/.claude/settings.json`:
@@ -214,6 +225,8 @@ The price table used for cost estimates is in `plugins/agent-crew/hooks/register
 claude plugin validate plugins/agent-crew
 claude plugin test plugins/agent-crew
 ```
+
+The pictures in `media/` are drawn by the mod itself from made-up sessions in `plugins/agent-crew/tests/media.test.ts`; `tests/render.ts` lays out what the desktop pane was handed. The steps to redraw them are in [workflow.md](knowledge-base/workflow.md#readme-pictures).
 
 ## Acknowledgements
 

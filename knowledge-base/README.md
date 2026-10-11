@@ -55,6 +55,7 @@ Rules:
 - [shell-parsing-heuristic](limits/shell-parsing-heuristic.md): file access in Bash/PowerShell is guessed; escapes, subshells, `$(…)`, heredocs left out
 - [windows-dev-tooling](limits/windows-dev-tooling.md): no Python here; scripts and heredocs mangle backslashes, so edit with Edit/Write
 - [tests-and-typecheck](limits/tests-and-typecheck.md): `tsc` needs the host-generated types; the test engine has no real git, canned `run` answers
+- [tests-cannot-write-files](limits/tests-cannot-write-files.md): tests run sandboxed, no `node:fs`, no env, no filter; pictures go out as `@@MEDIA` console lines
 
 ## Decisions
 
@@ -85,6 +86,7 @@ Rules:
 - [license-polyform-noncommercial](decisions/license-polyform-noncommercial.md): PolyForm Noncommercial so nobody monetises it; savvy and filetree parts stay MIT
 - [repo-name](decisions/repo-name.md): repo and marketplace `agent-crew`, local folder stays `claude-mods`; commits as jduerrmann
 - [privacy-before-push](decisions/privacy-before-push.md): README images rendered from made-up data; check the diff for personal data before a push
+- [readme-pictures-from-tests](decisions/readme-pictures-from-tests.md): `media/` drawn by the mod in `tests/media.test.ts`, laid out by `tests/render.ts`; light and dark
 - [review-and-verification](decisions/review-and-verification.md): check review findings against the code; every fix brings a regression test
 - [plans-in-knowledge-base](decisions/plans-in-knowledge-base.md): ideas live as plans, active or backlog, one per topic; deleted once done
 - [no-token-cost](decisions/no-token-cost.md): the mod never calls a model; no summaries or other features that spend tokens (user)
@@ -104,7 +106,6 @@ Read a plan, the notes it links and the code it points to before starting; check
 - [copy-path-and-prompt](plans/backlog/copy-path-and-prompt.md): copy a file's path or put `@path` into the prompt; suggest a commit (S)
 - [filters-since-and-agent-chips](plans/backlog/filters-since-and-agent-chips.md): filter to this round or since the last commit; a chip per agent (M)
 - [open-with-and-preview](plans/backlog/open-with-and-preview.md): open in the person's editor at the changed line; Markdown preview in the card (M)
-- [readme-images-refresh](plans/backlog/readme-images-refresh.md): redraw the README pictures for today's files section and settings (S)
 - [posix-absolute-paths](plans/backlog/posix-absolute-paths.md): on macOS and Linux, `/etc/hosts` stops merging into a repo folder `etc/` (M)
 
 ## Open questions
