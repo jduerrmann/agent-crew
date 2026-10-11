@@ -127,7 +127,7 @@ The section is off by default. Costs are estimated from token counts and a price
 </p>
 
 - **One time axis** for all agents: which ran when, and which ran in parallel.
-- **The main chat** in a row at the top: each of its turns a bar in Claude's colour, red when a turn failed and faint when it was interrupted. While its to-do list has open steps, the row says how far it has come (`main chat 2/5`). `timelineMain` turns the row off.
+- **The main chat** in a row at the top: each of its turns a bar in Claude's colour, red when a turn failed and faint when it was interrupted. While its to-do list has open steps, the row says how far it has come (`main chat 2/5`). `timelineMain` turns the row off; the main chat's work still counts on the axis, so the timeline starts when the session began to work, not with its first subagent.
 - **Folded pauses:** any stretch longer than 90 seconds without a running agent is folded into a labelled break, so rounds of work an hour apart keep readable bars.
 
 ### Files

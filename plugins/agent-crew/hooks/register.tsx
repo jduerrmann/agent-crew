@@ -1426,8 +1426,10 @@ const timelineAxis = (items: readonly { startedAt: number; endedAt?: number }[],
 const turnTone = (t: CrewMainTurn): { color: string; opacity: number } =>
   t.reason === 'error' || t.reason === 'refusal' ? { color: '#D0453F', opacity: 0.9 } : { color: CLAY, opacity: t.reason === 'aborted' ? 0.45 : 0.9 }
 
-/** The main chat's turns the timeline shows, by the `timelineMain` option. */
-const shownTurns = (turns: readonly CrewMainTurn[]): CrewMainTurn[] => (opts.timelineMain === false ? [] : [...turns])
+// Whether the main chat has a row, by the `timelineMain` option. Its turns join
+// the axis either way: the timeline starts when the session began to work, not
+// with its first subagent.
+const isMainShown = (turns: readonly CrewMainTurn[]): boolean => opts.timelineMain !== false && turns.length > 0
 
 // The main chat's row label, with how far its to-do list has come while steps are open.
 const mainLabel = (rep: CrewReport | null): string => `${tr().main}${rep && rep.total && rep.done < rep.total ? ` ${rep.done}/${rep.total}` : ''}`
@@ -1439,8 +1441,8 @@ const timelineSvg = (W: number, list: CrewRun[], turns: readonly CrewMainTurn[],
   const barW = W - barX - 4
   const GAP_W = 22
   const axis = timelineAxis([...items, ...turns], at, barW, GAP_W)
-  const top = turns.length ? 1 : 0
-  const mainRow = turns.length
+  const top = isMainShown(turns) ? 1 : 0
+  const mainRow = top
     ? `<text class="s" x="0" y="11" font-family="${FONT}" font-size="11">${xml(fitText(mainLabel(rep), 11, labelW))}</text>` +
       `<rect class="k" x="${barX}" y="4" width="${barW}" height="7" rx="3.5"/>` +
       turns
@@ -2168,8 +2170,8 @@ export const register: Register = (on, options) => {
         const fresh = (await read($, files)).some(f => at - f.lastAt < FRESH_MS + 1000)
         const counts = tick % 30 === 0 && (await read($, usage)).limits.some(l => l.resetsAt)
         const isOpen = (tick % 10 === 0 || counts) && (await $.ui.panes()).some(p => p.id === PANE)
-        // The main chat's bar in the timeline grows while it works, every few seconds.
-        const lastTurn = tick % 5 === 0 && opts.showTimeline !== false && opts.timelineMain !== false ? (await read($, mainTurns)).at(-1) : undefined
+        // The timeline grows while the main chat works, its row or not, every few seconds.
+        const lastTurn = tick % 5 === 0 && opts.showTimeline !== false ? (await read($, mainTurns)).at(-1) : undefined
         const isMainBusy = Boolean(lastTurn && lastTurn.endedAt === undefined)
         // A reset's countdown moves where it shows: in the open pane, or in the band.
         if (list.some(r => r.status === 'running') || fresh || isMainBusy || (counts && (isOpen || opts.bandUsage === true))) await update($, now, () => at)
@@ -3332,9 +3334,9 @@ export const register: Register = (on, options) => {
       )
 
       // --- the timeline, by the `showTimeline` option.
-      const turns = shownTurns(await read($, mainTurns))
+      const turns = await read($, mainTurns)
       const mainRep = await read($, mainReport)
-      const showTimeline = opts.showTimeline !== false && (list.length > 0 || turns.length > 0)
+      const showTimeline = opts.showTimeline !== false && (list.length > 0 || isMainShown(turns))
       const isAllHidden = !showUsage && !showTotals && !showAgents && opts.showTimeline === false && !showFiles
       const timelineToggle = (
         <Button
@@ -3557,7 +3559,7 @@ export const register: Register = (on, options) => {
               </Text>
             )
           })
-        const main = turns.length
+        const main = isMainShown(turns)
           ? [
               <Text key="tl-main" wrap="truncate-end">
                 <Text dimColor>{oneLine(mainLabel(mainRep), labelW).padEnd(labelW)} </Text>

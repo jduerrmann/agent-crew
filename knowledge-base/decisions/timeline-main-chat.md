@@ -18,7 +18,7 @@ updated: 2026-10-11
 - The turns are kept in `mainTurns`, the newest 200 ([store-json-4mib](../limits/store-json-4mib.md)). They join the axis, so a pause folds only when neither the main chat nor an agent worked.
 - The timeline shows as soon as the main chat has a turn, without any subagent.
 - While a turn runs, the pane redraws every five seconds so its bar grows.
-- `timelineMain` (on) switches the row off ([configurable-sections](configurable-sections.md)).
+- `timelineMain` (on) switches the row off ([configurable-sections](configurable-sections.md)). The turns join the axis either way (the user's call): otherwise an hour of work before the first subagent was missing, and the timeline started at 0:00 with it. Without the row and without a subagent there is nothing to draw, and the section stays away.
 
 **Alternatives:** model requests (`turn.step`) as the main chat's activity: they leave out the time tools run, so the bar would break into slivers.
 

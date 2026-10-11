@@ -237,6 +237,21 @@ test('the main chat leaves the timeline with timelineMain off', { options: { tim
   }
 })
 
+test("without its row, the main chat's work still spans the timeline's axis", { options: { timelineMain: false } }, async ($, on) => {
+  const { clock } = engine(on)
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  await start($)
+  // Half an hour of work before the first subagent, which then runs for 20 seconds.
+  await $.turn.start({ text: 'Los', turnId: 't1' } as never)
+  await clock.advance(30 * 60_000)
+  await spawn($, 'Tests schreiben', 'general-purpose')
+  await clock.advance(20_000)
+  const tl = await timelineOf($, 'desktop')
+  expect(tl).not.toContain('Hauptchat')
+  // The axis runs from when the session began to work, not from the subagent.
+  expect(tl).toContain('>30:20<')
+})
+
 test('every type its own colour and costume; savvy types wear the cap like any other', async ($, on) => {
   engine(on)
   await start($)
