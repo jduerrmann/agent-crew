@@ -36,6 +36,7 @@ Rules:
 - [usage-arrives-late](limits/usage-arrives-late.md): usage figures come only after a main-thread turn; empty until the first `session.measure`
 - [no-outside-change-events](limits/no-outside-change-events.md): no event for commits or edits made outside the session; git is polled while the pane is open
 - [open-file-per-os](limits/open-file-per-os.md): no open-in-editor call; the system's default app, via PowerShell, `open` or `xdg-open`
+- [open-does-not-raise-pane](limits/open-does-not-raise-pane.md): `ui.open` on an open pane only retitles; `focus` is refused after a band click; reopen in the answer
 - [pane-title-sticks](limits/pane-title-sticks.md): an open pane keeps its old title after a reload or language change; reopen it
 - [settings-and-notify-can-fail](limits/settings-and-notify-can-fail.md): `config.set` can be denied or admin-locked, `config.list` missing, `notify` unsent
 - [no-settings-dialog-on-desktop](limits/no-settings-dialog-on-desktop.md): `/config` and `/plugin` dialogs exist only in the terminal; hence the settings tab

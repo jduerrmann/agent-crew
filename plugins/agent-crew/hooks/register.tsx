@@ -154,6 +154,10 @@ const STRINGS = {
     bandFailed: (n: number) => `${n} mit Fehler`,
     bandDoneAgents: (n: number) => `${n} Subagent${n === 1 ? '' : 'en'} fertig`,
     bandFailedAgents: (n: number) => `${n} Subagent${n === 1 ? '' : 'en'} mit Fehler`,
+    bandIdle: (n: number) => `${n} ${n === 1 ? 'wartet' : 'warten'}`,
+    bandIdleAgents: (n: number) => (n === 1 ? '1 Subagent wartet' : `${n} Subagenten warten`),
+    bandStopped: (n: number) => `${n} gestoppt`,
+    bandStoppedAgents: (n: number) => `${n} Subagent${n === 1 ? '' : 'en'} gestoppt`,
     bandConflicts: (n: number) => `${n} Konflikt${n === 1 ? '' : 'e'}`,
     bandOpen: 'Crew öffnen',
   },
@@ -240,6 +244,10 @@ const STRINGS = {
     bandFailed: (n: number) => `${n} failed`,
     bandDoneAgents: (n: number) => `${n} subagent${n === 1 ? '' : 's'} done`,
     bandFailedAgents: (n: number) => `${n} subagent${n === 1 ? '' : 's'} failed`,
+    bandIdle: (n: number) => `${n} waiting`,
+    bandIdleAgents: (n: number) => `${n} subagent${n === 1 ? '' : 's'} waiting`,
+    bandStopped: (n: number) => `${n} stopped`,
+    bandStoppedAgents: (n: number) => `${n} subagent${n === 1 ? '' : 's'} stopped`,
     bandConflicts: (n: number) => `${n} conflict${n === 1 ? '' : 's'}`,
     bandOpen: 'Open crew',
   },
@@ -1079,7 +1087,7 @@ async function lookForUpdate($: EngineInterface, force: boolean, isOffline: bool
   let latest = saved?.latest
   const isDue = (!saved?.checkedAt || at - saved.checkedAt > CHECK_EVERY_MS) && (!saved?.failedAt || at - saved.failedAt > RETRY_AFTER_MS)
   if (!isOffline && (force || isDue)) {
-    await update($, updateInfo, () => ({ ...base, phase: 'checking' }))
+    await update($, updateInfo, (): CrewUpdate => ({ ...base, phase: 'checking' }))
     const url = rawGithubUrl(own.repository, 'plugins/agent-crew/.claude-plugin/plugin.json')
     let found: string | undefined
     try {
@@ -1116,7 +1124,7 @@ async function runUpdate($: EngineInterface): Promise<void> {
 }
 
 async function installUpdate($: EngineInterface, cur: CrewUpdate): Promise<void> {
-  await update($, updateInfo, () => ({ ...cur, phase: 'updating', error: undefined }))
+  await update($, updateInfo, (): CrewUpdate => ({ ...cur, phase: 'updating', error: undefined }))
   const run = async (argv: string[]) => {
     try {
       const r = await $.process.run(argv, { timeoutMs: 120_000 })
@@ -1127,27 +1135,40 @@ async function installUpdate($: EngineInterface, cur: CrewUpdate): Promise<void>
   }
   const error = (await run(['claude', 'plugin', 'marketplace', 'update', 'agent-crew'])) || (await run(['claude', 'plugin', 'update', PLUGIN_ID]))
   if (error) {
-    await update($, updateInfo, () => ({ ...cur, phase: 'failed', error }))
+    await update($, updateInfo, (): CrewUpdate => ({ ...cur, phase: 'failed', error }))
     $.ui.toast(tr().updateFailed(error))
     return
   }
-  await update($, updateInfo, () => ({ ...cur, phase: 'done' }))
+  await update($, updateInfo, (): CrewUpdate => ({ ...cur, phase: 'done' }))
   $.ui.toast(tr().updateDone(cur.latest ?? ''))
   // The new copy loads with the plugins: a dispatch of its own, after the toast.
   $.clock.after(800, () => void $.command.run({ command: 'reload-plugins' }).catch(() => undefined))
 }
 
+// `/crew`: shuts the pane the person sees; one that is open but out of sight
+// (a tab behind another, or waiting unplaced) comes into view instead.
 async function togglePane($: EngineInterface): Promise<boolean> {
-  const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
-  if (isOpen) {
+  const pane = (await $.ui.panes()).find(p => p.id === PANE)
+  if (pane?.isShown && pane.isPlaced) {
     await $.ui.close({ id: PANE })
     return false
   }
+  await showPane($)
+  return true
+}
+
+// Brings the pane into view. Opening an open id only retitles it, and `focus`,
+// which would raise it, is refused while the band or a pane holds the keys, as
+// right after a click on the band: a pane out of sight is shut and opened anew,
+// and a new pane is shown. Called in the answer to the person's input, never
+// later, so the host counts the open as asked for and places it at any width.
+async function showPane($: EngineInterface): Promise<void> {
   const at = await $.clock.now()
   await update($, now, () => at)
-  await $.ui.open({ id: PANE, title: tr().pane })
+  const pane = (await $.ui.panes()).find(p => p.id === PANE)
+  if (pane && !(pane.isShown && pane.isPlaced)) await $.ui.close({ id: PANE })
+  await $.ui.open({ id: PANE, title: tr().pane, focus: true })
   void syncGit($).catch(() => undefined)
-  return true
 }
 
 const kindOf = (e: { fork: boolean; isTeammate?: true; workflow?: unknown }): CrewKind =>
@@ -1447,26 +1468,42 @@ const BAND_AGENTS = 4
 
 type BandLine = { kind: 'crew' | 'progress' | 'usage'; segs: HotSeg[] }
 
+/** One count of the band's crew line: its sign and colour, and its words. */
+type CrewCount = { sign: string; color?: string; text: string; isDim?: boolean; isRunning?: boolean }
+
+// The crew by state, in the pane's order, then conflicts. The first count names
+// the subagents, so a band of finished or stopped ones still says what it counts.
+// Conflicts stay after the agents are cleared: they belong to the files.
+const crewCounts = (list: CrewRun[], fileList: CrewFile[]): CrewCount[] => {
+  const s = tr()
+  const by = (status: CrewStatus) => list.filter(r => r.status === status).length
+  const out: CrewCount[] = []
+  const add = (n: number, count: Omit<CrewCount, 'text'>, alone: (n: number) => string, after: (n: number) => string) => {
+    if (n) out.push({ ...count, text: out.length ? after(n) : alone(n) })
+  }
+  add(by('running'), { sign: '●', isRunning: true }, s.statusRunning, s.statusRunning)
+  add(by('idle'), { sign: '○ ', color: CLAY }, s.bandIdleAgents, s.bandIdle)
+  add(by('done'), { sign: '✓ ', color: COMMIT_COLOR, isDim: true }, s.bandDoneAgents, s.bandDone)
+  add(by('stopped'), { sign: '■ ', color: '#9a9a96', isDim: true }, s.bandStoppedAgents, s.bandStopped)
+  add(by('failed'), { sign: '✗ ', color: '#D0453F' }, s.bandFailedAgents, s.bandFailed)
+  const conflicts = fileList.filter(f => (f.conflict?.length ?? 0) > 1).length
+  if (conflicts) out.push({ sign: '⚠ ', color: '#D0453F', text: s.bandConflicts(conflicts) })
+  return out
+}
+
 const bandLines = (list: CrewRun[], fileList: CrewFile[], u: CrewUsage, at: number): BandLine[] => {
   const s = tr()
   const lines: BandLine[] = []
   const sep: HotSeg = { t: '  ·  ', dim: true }
   const join = (parts: HotSeg[][]): HotSeg[] => parts.flatMap((p, i) => (i ? [sep, ...p] : p))
   const running = list.filter(r => r.status === 'running')
-  // The crew: running (pulsing), finished, failed, and conflicts; nothing before the first agent.
-  if (opts.bandAgents !== false && list.length) {
-    const done = list.filter(r => r.status === 'done').length
-    const failed = list.filter(r => r.status === 'failed').length
-    const conflicts = fileList.filter(f => (f.conflict?.length ?? 0) > 1).length
-    const parts: HotSeg[][] = []
+  // The crew: every state that has agents, and conflicts; nothing while there is neither.
+  const counts = opts.bandAgents !== false ? crewCounts(list, fileList) : []
+  if (counts.length) {
     // A pulsing dot in each running agent's colour, where a picture would show its crab.
     const dots = running.slice(0, 8).map((r): HotSeg => ({ t: '●', c: colorOf(r), pulse: true }))
-    if (running.length) parts.push([...dots, { t: ` ${s.statusRunning(running.length)}` }])
-    // The first count names the subagents, so a band of finished ones still says what it counts.
-    if (done) parts.push([{ t: '✓ ', c: COMMIT_COLOR }, { t: parts.length ? s.bandDone(done) : s.bandDoneAgents(done), dim: true }])
-    if (failed) parts.push([{ t: '✗ ', c: '#D0453F' }, { t: parts.length ? s.bandFailed(failed) : s.bandFailedAgents(failed) }])
-    if (conflicts) parts.push([{ t: '⚠ ', c: '#D0453F' }, { t: s.bandConflicts(conflicts) }])
-    if (parts.length) lines.push({ kind: 'crew', segs: join(parts) })
+    const parts = counts.map((n): HotSeg[] => [...(n.isRunning ? [...dots, { t: ' ' }] : [{ t: n.sign, c: n.color }]), { t: n.text, dim: n.isDim }])
+    lines.push({ kind: 'crew', segs: join(parts) })
   }
   // Progress: each running agent with a short bar, as its row in the pane has it.
   if (opts.bandProgress === true && running.length) {
@@ -1504,12 +1541,27 @@ const BAND_CREW_H = 32
 const COMPACT_W = 96
 
 const bandCrewSvg = (W: number, list: CrewRun[], fileList: CrewFile[], at: number): string => {
-  const s = tr()
   const running = list.filter(r => r.status === 'running')
   const withBars = opts.bandProgress === true
-  const withCounts = opts.bandAgents !== false
+  // The counts come first and fit the band: in words while they fit, else as
+  // signs and numbers (`● 2 · ✓ 3`), else the last ones give way to `…`. Crabs
+  // only where room is left beside them, and their `+n` only beside a crab, as
+  // the counts already say how many run.
+  const SEP = '  ·  '
+  const all = opts.bandAgents !== false ? crewCounts(list, fileList) : []
+  const short = (n: CrewCount) => `${n.isRunning ? '● ' : n.sign}${/\d+/.exec(n.text)?.[0] ?? ''}`
+  const long = (n: CrewCount) => (n.isRunning ? '' : n.sign) + n.text
+  const widthOf = (ns: CrewCount[], form: (n: CrewCount) => string, cut: boolean) =>
+    ns.length ? textWidth(ns.map(form).join(SEP) + (cut ? `${SEP}…` : ''), 12.5) : 0
+  const room = W - 4
+  const isShort = widthOf(all, long, false) > room
+  const form = isShort ? short : long
+  let counts = all
+  while (counts.length > 1 && widthOf(counts, form, counts.length < all.length) > room) counts = counts.slice(0, -1)
+  const isCut = counts.length < all.length
+  const countsW = counts.length ? widthOf(counts, form, isCut) + 8 : 0
   const slot = withBars ? 180 : 30
-  const fit = Math.max(1, Math.floor((W - (withCounts ? 260 : 0)) / slot))
+  const fit = Math.max(0, Math.floor((W - countsW - 32) / slot))
   const shown = running.slice(0, fit)
   const crabs = shown
     .map((r, i) => {
@@ -1527,26 +1579,19 @@ const bandCrewSvg = (W: number, list: CrewRun[], fileList: CrewFile[], at: numbe
     })
     .join('')
   let x = shown.length * slot + (shown.length ? 4 : 0)
-  const more = running.length - shown.length
+  const more = shown.length ? running.length - shown.length : 0
   const moreText = more ? `<text class="s" x="${x}" y="20" font-family="${FONT}" font-size="12">+${more}</text>` : ''
   if (more) x += 28
-  let counts = ''
-  if (withCounts) {
-    const done = list.filter(r => r.status === 'done').length
-    const failed = list.filter(r => r.status === 'failed').length
-    const conflicts = fileList.filter(f => (f.conflict?.length ?? 0) > 1).length
-    // The first count names the subagents, so a band of finished ones still says what it counts.
-    const doneText = running.length ? s.bandDone(done) : s.bandDoneAgents(done)
-    const failedText = running.length || done ? s.bandFailed(failed) : s.bandFailedAgents(failed)
-    const parts = [
-      running.length ? `<tspan class="t" font-weight="600">${xml(s.statusRunning(running.length))}</tspan>` : '',
-      done ? `<tspan fill="${COMMIT_COLOR}">✓ </tspan><tspan class="s">${xml(doneText)}</tspan>` : '',
-      failed ? `<tspan fill="#D0453F">✗ ${xml(failedText)}</tspan>` : '',
-      conflicts ? `<tspan fill="#D0453F">⚠ ${xml(s.bandConflicts(conflicts))}</tspan>` : '',
-    ].filter(Boolean)
-    counts = `<text x="${x}" y="20" font-family="${FONT}" font-size="12.5">${parts.join('<tspan class="m">  ·  </tspan>')}</text>`
-  }
-  return svg(W, BAND_CREW_H, crabs + moreText + counts)
+  const parts = counts.map(n => {
+    const words = isShort ? short(n).slice(n.isRunning ? 2 : n.sign.length) : n.text
+    if (n.isRunning) return `${isShort ? `<tspan fill="${CLAY}">● </tspan>` : ''}<tspan class="t" font-weight="600">${xml(words)}</tspan>`
+    return `<tspan fill="${n.color ?? '#9a9a96'}">${xml(n.sign)}</tspan><tspan class="${n.isDim ? 's' : 't'}">${xml(words)}</tspan>`
+  })
+  if (isCut) parts.push('<tspan class="m">…</tspan>')
+  const countsText = parts.length
+    ? `<text x="${x}" y="20" font-family="${FONT}" font-size="12.5">${parts.join(`<tspan class="m">${SEP}</tspan>`)}</text>`
+    : ''
+  return svg(W, BAND_CREW_H, crabs + moreText + countsText)
 }
 
 // What `next(e)` resolves to where nothing beneath draws: the engine's own.
@@ -2022,7 +2067,8 @@ export const register: Register = (on, options) => {
         const fresh = (await read($, files)).some(f => at - f.lastAt < FRESH_MS + 1000)
         const counts = tick % 30 === 0 && (await read($, usage)).limits.some(l => l.resetsAt)
         const isOpen = (tick % 10 === 0 || counts) && (await $.ui.panes()).some(p => p.id === PANE)
-        if (list.some(r => r.status === 'running') || fresh || (counts && isOpen)) await update($, now, () => at)
+        // A reset's countdown moves where it shows: in the open pane, or in the band.
+        if (list.some(r => r.status === 'running') || fresh || (counts && (isOpen || opts.bandUsage === true))) await update($, now, () => at)
         // While an agent runs, the pane redraws a few times a second: the crabs'
         // walk is a flip book of stills, one per redraw (CRAB_CSS in crab.ts).
         // Only where the crabs are pictures: the desktop pane, drawn of late.
@@ -2115,7 +2161,8 @@ export const register: Register = (on, options) => {
       // click region, since a picture takes no press.
       if (BandSvg && Client) {
         const W = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 16))
-        const hasCrew = list.length > 0 && (opts.bandAgents !== false || (opts.bandProgress === true && list.some(r => r.status === 'running')))
+        const hasCrew =
+          (opts.bandAgents !== false && crewCounts(list, fileList).length > 0) || (opts.bandProgress === true && list.some(r => r.status === 'running'))
         const meters = opts.bandUsage === true ? metersOf(u).filter(m => opts[meterOption(m.key)] !== false) : []
         const s = tr()
         const hit = (key: string) => (
@@ -2473,14 +2520,11 @@ export const register: Register = (on, options) => {
       $.clock.after(1, () => void $.command.run({ command: 'compact' }).catch(() => undefined))
       return {}
     }
-    // A click on the band above the prompt opens the pane: a dispatch of its own,
-    // as work started inside the click may end with it (onpress-work-dropped).
+    // A click on the band above the prompt brings the pane into view, never a
+    // toggle. It opens in the answer to the click, so the host counts it as the
+    // person's own open and places it at any width; this hook awaits it.
     if (typeof e.element === 'string' && e.element.startsWith('band-') && (e.data as { press?: unknown } | undefined)?.press === 'band') {
-      $.clock.after(1, () =>
-        void (async () => {
-          if (!(await $.ui.panes()).some(p => p.id === PANE)) await togglePane($)
-        })().catch(() => undefined),
-      )
+      await showPane($)
       return {}
     }
     if (e.requestId !== PANE || typeof e.element !== 'string' || !e.data || typeof e.data !== 'object') return next(e)

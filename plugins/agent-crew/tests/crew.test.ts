@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { textWidth } from '../hooks/crab'
 import { isNewer } from '../hooks/files'
 import type { Engine } from 'claude-code/testing'
 import type { AgentInfo, On } from 'claude-code'
@@ -11,7 +12,13 @@ const PANE_PROPS = { title: 'Crew', isFocused: false, bodyColumns: 60, placement
 // are recorded, every tool call succeeds.
 // `run` answers the commands the mod runs (git), else "not a git repository".
 type RunAnswer = { exitCode: number; stdout: string; stderr?: string }
-function engine(on: On, listed: AgentInfo[] = [], run?: (argv: string[]) => RunAnswer | undefined) {
+// A pane as the host keeps it: open, the one shown or a tab behind, placed or waiting.
+type PaneState = { id: string; isShown: boolean; isPlaced: boolean }
+
+// `panes`: the panes open at the start. They change as the host's would: opening
+// a new id shows and places it, opening an open id only retitles it (it stays
+// where it was, behind or unplaced), closing removes it.
+function engine(on: On, listed: AgentInfo[] = [], run?: (argv: string[]) => RunAnswer | undefined, panes: PaneState[] = []) {
   const clock = mock.clock(on)
   mock.env(on, { LANG: 'de_DE.UTF-8' })
   const opened: string[] = []
@@ -31,8 +38,18 @@ function engine(on: On, listed: AgentInfo[] = [], run?: (argv: string[]) => RunA
   })
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `a${++n}` }))
   on('agent.list', () => ({ value: listed }))
-  on('ui.open', (_$, e) => (opened.push(e.id), { value: { isPlaced: true as const } }))
-  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', (_$, e) => {
+    opened.push(e.id)
+    const pane = panes.find(p => p.id === e.id)
+    if (!pane) panes.push({ id: e.id, isShown: true, isPlaced: true })
+    return { value: { isPlaced: pane ? pane.isPlaced : true } } as never
+  })
+  on('ui.close', (_$, e) => {
+    const i = panes.findIndex(p => p.id === e.id)
+    if (i >= 0) panes.splice(i, 1)
+    return { value: undefined } as never
+  })
+  on('ui.panes', () => ({ value: panes.map(p => ({ ...p, title: p.id, isFocused: false })) }) as never)
   on('ui.status', (_$, e) => (status.push(e.text), { value: undefined }))
   on('settings.read', () => ({ value: {} }) as never)
   on('command.register', () => ({ value: {} }) as never)
@@ -42,7 +59,7 @@ function engine(on: On, listed: AgentInfo[] = [], run?: (argv: string[]) => RunA
   on('config.list', () => ({ value: [] }))
   on('config.set', (_$, e) => (configSets.push({ key: e.key, value: e.value }), { value: e.value }))
   on('tool.call', () => ({ result: 'ok' }) as never)
-  return { opened, status, toasts, clock, configSets, runs }
+  return { opened, status, toasts, clock, configSets, runs, panes }
 }
 
 const start = ($: Engine) => $.session.start({ cwd: '/work', surface: null, isInteractive: true })
@@ -455,7 +472,8 @@ test('the search field loses its focus when the prompt or another button takes t
   expect(await isFocused()).toBe(false)
   await ui.pointer({ type: 'down', x: 5, y: 1, button: 'left', in: 'search' })
   expect(await isFocused()).toBe(true)
-  await $.prompt.edit({ text: 'a', cursor: 1, start: 0, end: 0, inputText: 'a' } as never)
+  // The engine raises prompt.edit; the test API carries it untyped.
+  await ($.prompt as unknown as { edit: (e: unknown) => Promise<unknown> }).edit({ text: 'a', cursor: 1, start: 0, end: 0, inputText: 'a' })
   expect(await isFocused()).toBe(false)
   await ui.key({ key: 'a', in: 'search' })
   expect(await isFocused()).toBe(true)
@@ -1088,6 +1106,141 @@ test(
     expect(status.filter(Boolean)).toEqual([])
   },
 )
+
+test('a click on the band brings the pane into view: a tab behind, or waiting unplaced', async ($, on) => {
+  const state = engine(on, [], undefined, [{ id: 'agent-crew', isShown: false, isPlaced: true }])
+  const crew = () => state.panes.find(p => p.id === 'agent-crew')
+  beneathBand(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const band = (await mountBand($, 'terminal')) as Band
+  // A tab behind another: shown after the click.
+  await band.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: 'band-0' })
+  expect(crew()).toEqual({ id: 'agent-crew', isShown: true, isPlaced: true })
+  // Waiting unplaced: placed and shown after the click.
+  Object.assign(crew() ?? {}, { isPlaced: false })
+  await band.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: 'band-0' })
+  expect(crew()).toEqual({ id: 'agent-crew', isShown: true, isPlaced: true })
+  // In view already, a click leaves it open: never a toggle.
+  await band.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: 'band-0' })
+  expect(crew()).toEqual({ id: 'agent-crew', isShown: true, isPlaced: true })
+})
+
+test('/crew shows a pane that is open out of sight, and shuts only the one in view', async ($, on) => {
+  const state = engine(on, [], undefined, [{ id: 'agent-crew', isShown: false, isPlaced: true }])
+  await start($)
+  const crew = () => state.panes.find(p => p.id === 'agent-crew')
+  await $.command.run({ command: 'crew', args: '' } as never)
+  expect(crew()).toEqual({ id: 'agent-crew', isShown: true, isPlaced: true })
+  await $.command.run({ command: 'crew', args: '' } as never)
+  expect(crew()).toBeUndefined()
+})
+
+test('the band counts waiting and stopped agents, and keeps conflicts once the agents are cleared', async ($, on) => {
+  engine(on)
+  beneathBand(on)
+  await start($)
+  await spawn($, 'Erster', 'general-purpose')
+  await spawn($, 'Zweiter', 'general-purpose')
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'a', new_string: 'b', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'b', new_string: 'c', agentId: 'a2' } as never)
+  await $.turn.complete({ agentId: 'a1', reason: 'aborted', answer: '', turnId: 't1' } as never)
+  await $.turn.complete({ agentId: 'a2', reason: 'aborted', answer: '', turnId: 't2' } as never)
+  for (const surface of SURFACES) {
+    const band = (await mountBand($, surface)) as Band
+    const text = await bandText(band)
+    expect(text).toContain('2 Subagenten gestoppt')
+    expect(text).toContain('1 Konflikt')
+    await band.unmount()
+  }
+  // Cleared, the agents leave the band; their conflict stays, as it belongs to the file.
+  const pane = await mount($, 'desktop')
+  await showTab(pane, 'desktop', 'done')
+  await pane.press({ key: 'clear' })
+  for (const surface of SURFACES) {
+    const band = (await mountBand($, surface)) as Band
+    const text = await bandText(band)
+    expect(text).not.toContain('gestoppt')
+    expect(text).toContain('1 Konflikt')
+    await band.unmount()
+  }
+})
+
+test("the band's reset countdown moves with the pane shut", { options: { bandUsage: true } }, async ($, on) => {
+  const { clock } = engine(on)
+  beneathBand(on)
+  await start($)
+  const resetsAt = new Date((await clock.now()) + 80 * 60_000 + 30_000).toISOString()
+  await $.session.measure({ context: { percent: 31, tokens: 62000, window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 40, resetsAt }], changed: ['context', 'rateLimits'] } as never)
+  const band = (await mountBand($, 'terminal')) as Band
+  expect(await bandText(band)).toContain('1h 20m')
+  // No agent runs and no pane is open: the countdown still moves on.
+  await clock.advance(61_000)
+  expect(await bandText(band)).toContain('1h 19m')
+})
+
+test('a narrow desktop band keeps its counts whole and drops the crabs', async ($, on) => {
+  engine(on)
+  beneathBand(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  await spawn($, 'Plan', 'Plan')
+  await $.turn.complete({ agentId: 'a2', reason: 'answer', answer: 'Fertig.', turnId: 't2' } as never)
+  const band = (await mountBand($, 'desktop', { bodyColumns: 30 })) as Band
+  const text = await bandText(band)
+  expect(text).toContain('1 Subagent aktiv')
+  expect(text).toContain('1 fertig')
+  expect(text).not.toContain('run flip')
+})
+
+// Where the crew picture's counts end, as the picture measures text: their x
+// plus the width of what they say, against the picture's width.
+function countsExtent(source: string): { end: number; width: number; text: string } {
+  const width = Number(/<svg[^>]* width="(\d+)"/.exec(source)?.[1])
+  const m = /<text x="([\d.]+)" y="20" font-family="[^"]*" font-size="12.5">(.*?)<\/text>/.exec(source)
+  const text = (m?.[2] ?? '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+  return { end: Number(m?.[1] ?? 0) + textWidth(text, 12.5), width, text }
+}
+
+test('the desktop band fits its counts to its width: words, then signs and numbers, then …', async ($, on) => {
+  // Six kinds at once: running, waiting, done, stopped, failed, and a conflict.
+  engine(on, [
+    { id: 'w1', type: 'general-purpose', description: 'Wartet', status: 'idle' },
+    { id: 'd1', type: 'general-purpose', description: 'Fertig', status: 'completed' },
+    { id: 's1', type: 'general-purpose', description: 'Gestoppt', status: 'killed' },
+    { id: 'f1', type: 'general-purpose', description: 'Fehler', status: 'failed' },
+  ] as never)
+  beneathBand(on)
+  await start($)
+  await spawn($, 'Läuft', 'Explore')
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'a', new_string: 'b', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'b', new_string: 'c', agentId: 'w1' } as never)
+  const crewPicture = async (columns: number) => {
+    const band = await mountBand($, 'desktop', { bodyColumns: columns })
+    let source = ''
+    JSON.stringify(await band.drawn(), (_k, v) => {
+      if (v && typeof v === 'object' && v.type === 'Svg' && !source) source = String(v.props?.source)
+      return v
+    })
+    await band.unmount()
+    return countsExtent(source)
+  }
+  // Wide: in words, all six.
+  const wide = await crewPicture(140)
+  expect(wide.text).toContain('1 Subagent aktiv')
+  expect(wide.text).toContain('1 wartet')
+  expect(wide.text).toContain('1 Konflikt')
+  expect(wide.end).toBeLessThanOrEqual(wide.width)
+  // Narrower: signs and numbers, still inside the picture.
+  const mid = await crewPicture(30)
+  expect(mid.text).not.toContain('Subagent')
+  expect(mid.text).toMatch(/● 1 {2}· {2}○ 1/)
+  expect(mid.end).toBeLessThanOrEqual(mid.width)
+  // Narrowest: the last ones give way to …, and nothing runs past the edge.
+  const narrow = await crewPicture(20)
+  expect(narrow.text).toContain('…')
+  expect(narrow.end).toBeLessThanOrEqual(narrow.width)
+})
 
 test("a worker's reported steps fill its bar for real, with the step under way", async ($, on) => {
   engine(on)

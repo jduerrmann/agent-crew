@@ -19,7 +19,8 @@ updated: 2026-10-11
   - `bandProgress` (off): each running agent's name and bar (`barOf`) beside its crab, at most what fits, then `+n`.
   - `bandUsage` (off): the pane's usage rings (`usageSvg`) on the desktop, small cell bars in the terminal. It respects the `usage*` options and shows the time until each limit resets. A `/compact` button sits beside it, as in the pane's usage section; it is a click region with a background (`bg`), not a Button.
   - `statusLine` (on): the status line entry `🦀 N Subagenten aktiv`, now switchable.
-- **Click:** every line is a `hotspot.tsx` click region (over the pictures on the desktop), and a press opens the pane ([redraw-drops-button-clicks](../limits/redraw-drops-button-clicks.md)).
+- **Click:** every line is a `hotspot.tsx` click region (over the pictures on the desktop), and a press opens the pane ([redraw-drops-button-clicks](../limits/redraw-drops-button-clicks.md)). The press brings the pane into view even when it is open as a tab behind or waits unplaced ([open-does-not-raise-pane](../limits/open-does-not-raise-pane.md)). It never shuts the pane.
+- **Counts fit the band:** in words while they fit, else as signs and numbers (`● 2 · ✓ 3`), else the last ones give way to `…`. The crabs take only the room left beside them.
 - **Other bands:** the platform shows one band, the first hook's answer. agent-crew calls `next(e)`. When a plugin beneath draws a band of its own (savvy-progress during a flow), that band stays under agent-crew's in one column. When it is the engine's own (`{ type: 'engine' }`), agent-crew's band stands alone.
 - **Redraws:** the band reads `now` only while something in it moves: the crabs' walk on the desktop, a bar, a reset's countdown. It sets `desktopDrawnAt`, so the crabs' flip book ([crab-flip-book](crab-flip-book.md)) runs with the pane closed too.
 

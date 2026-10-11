@@ -18,7 +18,7 @@ claude plugin test plugins/agent-crew
   - `tests/crew.test.ts` holds the pane tests. Expected strings are German, because the engine sets `LANG=de_DE.UTF-8`.
   - `tests/shell.test.ts` tables the shell parsing.
 - **Tests with a change:** a change in behaviour comes with a test. A fixed bug comes with a test that fails on the old code.
-- **Type-check:** where the host has generated the types, run `npx -p typescript@5.6.3 tsc -p plugins/agent-crew` ([tests-and-typecheck](limits/tests-and-typecheck.md)).
+- **Type-check:** where the host has generated the types, run `npx -p typescript@5.6.3 tsc -p plugins/agent-crew` before a commit; it must report no errors. The tests don't check types ([tests-and-typecheck](limits/tests-and-typecheck.md)).
 - **Review findings:** findings, such as the Codex reviews the user pastes, are checked against the code before they are fixed or rejected ([review-and-verification](decisions/review-and-verification.md)).
 - **Reporting:** say plainly whether a change was seen in the real app or only in tests.
 - **Live loading:** the user loads the working copy live ([load-from-working-copy](decisions/load-from-working-copy.md)), so edits show up in their sessions at once. Never edit an old copy under `~/.claude/dev-mods/`.
