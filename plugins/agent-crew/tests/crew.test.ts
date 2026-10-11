@@ -976,6 +976,119 @@ test('crabMotion light keeps the crabs on their own animation, without the flip 
   expect(await drawnPart(desk, 'row-a1')).toBe(row)
 })
 
+// The band above the prompt, with what draws beneath it: the engine's own
+// nothing, or another plugin's band.
+function beneathBand(on: On, other?: () => unknown) {
+  on('ui.render', { component: 'AbovePrompt' }, () => (other?.() ?? { type: 'engine', ref: 0 }) as never)
+}
+const mountBand = ($: Engine, surface: Surface, extra: Record<string, unknown> = {}) =>
+  $.ui.mount({
+    plugin: 'agent-crew',
+    surface,
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 9 }, view: {}, ...extra },
+  } as never)
+type Band = Awaited<ReturnType<typeof mountBand>> & Pick<Mounted, 'pointer'>
+// What the band shows: its text segments on the terminal, its pictures' sources on the desktop.
+const bandText = async (ui: Band) => {
+  const texts: string[] = []
+  JSON.stringify(await ui.drawn(), (_k, v) => {
+    if (v && typeof v === 'object' && typeof v.t === 'string') texts.push(v.t)
+    if (v && typeof v === 'object' && v.type === 'Svg') texts.push(String(v.props?.source))
+    return v
+  })
+  return texts.join('')
+}
+
+test('the band above the prompt shows the crew, and a click on it opens the pane', async ($, on) => {
+  const { opened, clock } = engine(on)
+  beneathBand(on)
+  await start($)
+  for (const surface of SURFACES) {
+    const before = await mountBand($, surface)
+    // No agent yet: the band stays the engine's.
+    expect(JSON.stringify(await before.drawn())).not.toContain('crew-band')
+    await before.unmount()
+  }
+  await spawn($, 'Tests reparieren', 'Explore')
+  await spawn($, 'Plan', 'Plan')
+  await $.turn.complete({ agentId: 'a2', reason: 'answer', answer: 'Fertig.', turnId: 't2' } as never)
+  for (const surface of SURFACES) {
+    const band = (await mountBand($, surface)) as Band
+    const text = await bandText(band)
+    expect(text).toContain('1 Subagent aktiv')
+    expect(text).toContain('1 fertig')
+    // On the desktop the running agent walks as its crab; on the terminal it is a dot in its colour.
+    if (surface === 'desktop') expect(text).toContain('c-explore run flip')
+    else expect(text).toContain('●')
+    // The usage and progress lines are off by default.
+    expect(text).not.toContain('Kontext')
+    opened.length = 0
+    // Opened in a dispatch of its own, after the click.
+    await band.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: 'band-0' })
+    await clock.advance(10)
+    expect(opened).toEqual(['agent-crew'])
+    await band.unmount()
+  }
+  // With every agent finished, the count says what it counts.
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Fertig.', turnId: 't1' } as never)
+  for (const surface of SURFACES) {
+    const band = (await mountBand($, surface)) as Band
+    expect(await bandText(band)).toContain('2 Subagenten fertig')
+    await band.unmount()
+  }
+})
+
+test('the band yields to a survey, and keeps another plugin’s band beneath its own', async ($, on) => {
+  engine(on)
+  beneathBand(on, () => ({ type: 'Text', props: {}, children: ['savvy band'] }))
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const band = await mountBand($, 'terminal')
+  const drawn = JSON.stringify(await band.drawn())
+  expect(drawn).toContain('crew-band')
+  expect(drawn).toContain('savvy band')
+  const survey = await mountBand($, 'terminal', { hasSurvey: true })
+  expect(JSON.stringify(await survey.drawn())).not.toContain('crew-band')
+})
+
+test(
+  'band options: progress and usage lines on, the crew line and the status line off',
+  { options: { bandAgents: false, bandProgress: true, bandUsage: true, statusLine: false } },
+  async ($, on) => {
+    const { status, clock } = engine(on)
+    beneathBand(on)
+    const compacts: string[] = []
+    on('command.run', { command: 'compact' }, () => (compacts.push('compact'), { text: '' }) as never)
+    await start($)
+    const resetsAt = new Date((await clock.now()) + 80 * 60_000).toISOString()
+    await $.session.measure({ context: { percent: 31, tokens: 62000, window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 83, resetsAt }], changed: ['context', 'rateLimits'] } as never)
+    await spawn($, 'Tests reparieren', 'Explore')
+    for (const surface of SURFACES) {
+      const band = (await mountBand($, surface)) as Band
+      const text = await bandText(band)
+      expect(text).not.toContain('Subagent aktiv')
+      expect(text).toContain('Tests reparieren')
+      expect(text).toContain('Kontext')
+      expect(text).toContain('31%')
+      expect(text).toContain('83%')
+      expect(text).toMatch(/1h (19|20)m/)
+      if (surface === 'desktop') {
+        // The pane's usage rings, and the crab with its bar beside it.
+        expect(text).toContain('stroke-dasharray')
+        expect(text).toContain('c-explore run flip')
+      } else expect(text).toMatch(/[█▏▎▍▌▋▊▉░]{6}/)
+      // /compact beside the usage runs the command, as the pane's button does.
+      expect(text).toContain('/compact')
+      await band.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: 'band-compact' })
+      await clock.advance(10)
+      await band.unmount()
+    }
+    expect(compacts).toEqual(['compact', 'compact'])
+    expect(status.filter(Boolean)).toEqual([])
+  },
+)
+
 test("a worker's reported steps fill its bar for real, with the step under way", async ($, on) => {
   engine(on)
   await start($)

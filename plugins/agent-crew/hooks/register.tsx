@@ -150,6 +150,12 @@ const STRINGS = {
     isNew: 'neu',
     isDeleted: 'gelöscht',
     statusRunning: (n: number) => `${n} Subagent${n === 1 ? '' : 'en'} aktiv`,
+    bandDone: (n: number) => `${n} fertig`,
+    bandFailed: (n: number) => `${n} mit Fehler`,
+    bandDoneAgents: (n: number) => `${n} Subagent${n === 1 ? '' : 'en'} fertig`,
+    bandFailedAgents: (n: number) => `${n} Subagent${n === 1 ? '' : 'en'} mit Fehler`,
+    bandConflicts: (n: number) => `${n} Konflikt${n === 1 ? '' : 'e'}`,
+    bandOpen: 'Crew öffnen',
   },
   en: {
     pane: 'Crew',
@@ -230,6 +236,12 @@ const STRINGS = {
     isNew: 'new',
     isDeleted: 'deleted',
     statusRunning: (n: number) => `${n} subagent${n === 1 ? '' : 's'} running`,
+    bandDone: (n: number) => `${n} done`,
+    bandFailed: (n: number) => `${n} failed`,
+    bandDoneAgents: (n: number) => `${n} subagent${n === 1 ? '' : 's'} done`,
+    bandFailedAgents: (n: number) => `${n} subagent${n === 1 ? '' : 's'} failed`,
+    bandConflicts: (n: number) => `${n} conflict${n === 1 ? '' : 's'}`,
+    bandOpen: 'Open crew',
   },
 } as const
 
@@ -243,6 +255,10 @@ let tick = 0
 // The flip book's timer, running only while an agent walks on a desktop pane.
 let flipTimer: { cancel: () => void } | undefined
 let desktopDrawnAt = -Infinity
+// Drawings of the pane and the band under way. A tick of the clock while one is
+// running would start the next before it ends: live, where each read crosses to
+// the host, a drawing can take longer than a flip, and none would ever finish.
+let drawing = 0
 // By the `crabMotion` option: `smooth`, a flip book of stills redrawn four times
 // a second; `light`, the crabs' own animation, which each redraw starts over.
 const flipAt = (at: number): number | undefined => (opts.crabMotion === 'light' ? undefined : at)
@@ -359,6 +375,15 @@ const elapsed = (r: CrewRun, at: number): number => (r.endedAt ?? Math.max(at, r
 
 const ctxOf = (r: CrewRun): number =>
   r.contextMax ? Math.min(100, Math.round((r.contextTokens / r.contextMax) * 100)) : 0
+
+// A bar in text cells, in eighths of a cell, so a slow estimate visibly grows.
+const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
+const cellBar = (share: number, width: number): string => {
+  const eighths = Math.round(width * 8 * Math.max(0, Math.min(1, share)))
+  const full = Math.floor(eighths / 8)
+  const part = EIGHTHS[eighths % 8] ?? ''
+  return '█'.repeat(full) + part + '░'.repeat(Math.max(0, width - full - (part ? 1 : 0)))
+}
 
 // The estimate's pace: a third of the way after about a minute or a dozen
 // model requests, the two adding up; it never passes ESTIMATE_CAP.
@@ -565,9 +590,10 @@ const statusFromList = (s: AgentInfo['status']): CrewStatus => {
 
 const isTerminal = (s: CrewStatus): boolean => s === 'done' || s === 'failed' || s === 'stopped'
 
+// The status line entry, by the `statusLine` option.
 async function refreshStatus($: EngineInterface): Promise<void> {
   const n = (await read($, runs)).filter(r => r.status === 'running').length
-  $.ui.status(n ? `🦀 ${tr().statusRunning(n)}` : undefined)
+  $.ui.status(n && opts.statusLine !== false ? `🦀 ${tr().statusRunning(n)}` : undefined)
 }
 
 // Folds `$.agent.list()` in: agents the mod never saw spawn (a forked skill, one
@@ -1398,16 +1424,133 @@ const meterOption = (key: string): string =>
 // Blue while there is room, amber from 80 %, red from 95 %.
 const meterColor = (percent: number): string => (percent >= 95 ? '#D0453F' : percent >= 80 ? '#BA7517' : '#378ADD')
 
-const resetIn = (iso: string, at: number): string => {
+// The time until a reset, `1h 20m`; empty once it has passed or can't be read.
+const spanTo = (iso: string, at: number): string => {
   const when = Date.parse(iso)
   if (!Number.isFinite(when)) return ''
   const ms = when - at
   if (ms <= 0) return ''
   const h = Math.floor(ms / 3_600_000)
   const m = Math.floor((ms % 3_600_000) / 60_000)
-  const span = h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : h ? `${h}h ${m}m` : `${m}m`
-  return tr().resets(span)
+  return h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : h ? `${h}h ${m}m` : `${m}m`
 }
+
+const resetIn = (iso: string, at: number): string => {
+  const span = spanTo(iso, at)
+  return span ? tr().resets(span) : ''
+}
+
+// --- the band above the prompt: a line for each part its options keep, each
+// line a click region (hotspot.tsx) that opens the pane.
+
+const BAND_AGENTS = 4
+
+type BandLine = { kind: 'crew' | 'progress' | 'usage'; segs: HotSeg[] }
+
+const bandLines = (list: CrewRun[], fileList: CrewFile[], u: CrewUsage, at: number): BandLine[] => {
+  const s = tr()
+  const lines: BandLine[] = []
+  const sep: HotSeg = { t: '  ·  ', dim: true }
+  const join = (parts: HotSeg[][]): HotSeg[] => parts.flatMap((p, i) => (i ? [sep, ...p] : p))
+  const running = list.filter(r => r.status === 'running')
+  // The crew: running (pulsing), finished, failed, and conflicts; nothing before the first agent.
+  if (opts.bandAgents !== false && list.length) {
+    const done = list.filter(r => r.status === 'done').length
+    const failed = list.filter(r => r.status === 'failed').length
+    const conflicts = fileList.filter(f => (f.conflict?.length ?? 0) > 1).length
+    const parts: HotSeg[][] = []
+    // A pulsing dot in each running agent's colour, where a picture would show its crab.
+    const dots = running.slice(0, 8).map((r): HotSeg => ({ t: '●', c: colorOf(r), pulse: true }))
+    if (running.length) parts.push([...dots, { t: ` ${s.statusRunning(running.length)}` }])
+    // The first count names the subagents, so a band of finished ones still says what it counts.
+    if (done) parts.push([{ t: '✓ ', c: COMMIT_COLOR }, { t: parts.length ? s.bandDone(done) : s.bandDoneAgents(done), dim: true }])
+    if (failed) parts.push([{ t: '✗ ', c: '#D0453F' }, { t: parts.length ? s.bandFailed(failed) : s.bandFailedAgents(failed) }])
+    if (conflicts) parts.push([{ t: '⚠ ', c: '#D0453F' }, { t: s.bandConflicts(conflicts) }])
+    if (parts.length) lines.push({ kind: 'crew', segs: join(parts) })
+  }
+  // Progress: each running agent with a short bar, as its row in the pane has it.
+  if (opts.bandProgress === true && running.length) {
+    const shown = running.slice(0, BAND_AGENTS)
+    const parts = shown.map((r): HotSeg[] => {
+      const b = barOf(r, at)
+      return [{ t: `${oneLine(r.description || typeLabel(r), 18)} `, c: colorOf(r) }, { t: cellBar(b.share, 6), c: b.color }]
+    })
+    const more = running.length - shown.length
+    lines.push({ kind: 'progress', segs: [...join(parts), ...(more ? [{ t: `  +${more}`, dim: true }] : [])] })
+  }
+  // Usage: the meters the usage options keep, coloured from 80 %, a limit with its reset.
+  if (opts.bandUsage === true) {
+    const parts = metersOf(u)
+      .filter(m => opts[meterOption(m.key)] !== false)
+      .map((m): HotSeg[] => {
+        const span = m.resetsAt ? spanTo(m.resetsAt, at) : ''
+        return [
+          { t: `${m.label} `, dim: true },
+          { t: `${cellBar(m.percent / 100, 6)} `, c: meterColor(m.percent) },
+          { t: `${m.percent}%`, c: m.percent >= 80 ? meterColor(m.percent) : undefined, b: m.percent >= 80 },
+          ...(span ? [{ t: ` (${span})`, dim: true }] : []),
+        ]
+      })
+    if (parts.length) lines.push({ kind: 'usage', segs: join(parts) })
+  }
+  return lines
+}
+
+// The band's crew on the desktop: a walking crab for each running agent (with
+// its name and bar beside it, by `bandProgress`), then the counts (by
+// `bandAgents`). The crabs walk as the pane's do, a flip book (crab-flip-book).
+const BAND_CREW_H = 32
+// Room the /compact button takes beside the usage rings, in CSS px.
+const COMPACT_W = 96
+
+const bandCrewSvg = (W: number, list: CrewRun[], fileList: CrewFile[], at: number): string => {
+  const s = tr()
+  const running = list.filter(r => r.status === 'running')
+  const withBars = opts.bandProgress === true
+  const withCounts = opts.bandAgents !== false
+  const slot = withBars ? 180 : 30
+  const fit = Math.max(1, Math.floor((W - (withCounts ? 260 : 0)) / slot))
+  const shown = running.slice(0, fit)
+  const crabs = shown
+    .map((r, i) => {
+      const x = i * slot
+      const body = crab(x, 3, costumeOf(r), colorOf(r), false, true, 0.85, flipAt(at))
+      if (!withBars) return body
+      const b = barOf(r, at)
+      const bx = x + 32
+      const bw = slot - 44
+      return (
+        body +
+        `<text class="t" x="${bx}" y="14" font-family="${FONT}" font-size="11.5">${xml(fitText(r.description || typeLabel(r), 11.5, bw))}</text>` +
+        `<rect class="k" x="${bx}" y="21" width="${bw}" height="4" rx="2"/><rect x="${bx}" y="21" width="${Math.round(bw * b.share)}" height="4" rx="2" fill="${b.color}" opacity=".75"/>`
+      )
+    })
+    .join('')
+  let x = shown.length * slot + (shown.length ? 4 : 0)
+  const more = running.length - shown.length
+  const moreText = more ? `<text class="s" x="${x}" y="20" font-family="${FONT}" font-size="12">+${more}</text>` : ''
+  if (more) x += 28
+  let counts = ''
+  if (withCounts) {
+    const done = list.filter(r => r.status === 'done').length
+    const failed = list.filter(r => r.status === 'failed').length
+    const conflicts = fileList.filter(f => (f.conflict?.length ?? 0) > 1).length
+    // The first count names the subagents, so a band of finished ones still says what it counts.
+    const doneText = running.length ? s.bandDone(done) : s.bandDoneAgents(done)
+    const failedText = running.length || done ? s.bandFailed(failed) : s.bandFailedAgents(failed)
+    const parts = [
+      running.length ? `<tspan class="t" font-weight="600">${xml(s.statusRunning(running.length))}</tspan>` : '',
+      done ? `<tspan fill="${COMMIT_COLOR}">✓ </tspan><tspan class="s">${xml(doneText)}</tspan>` : '',
+      failed ? `<tspan fill="#D0453F">✗ ${xml(failedText)}</tspan>` : '',
+      conflicts ? `<tspan fill="#D0453F">⚠ ${xml(s.bandConflicts(conflicts))}</tspan>` : '',
+    ].filter(Boolean)
+    counts = `<text x="${x}" y="20" font-family="${FONT}" font-size="12.5">${parts.join('<tspan class="m">  ·  </tspan>')}</text>`
+  }
+  return svg(W, BAND_CREW_H, crabs + moreText + counts)
+}
+
+// What `next(e)` resolves to where nothing beneath draws: the engine's own.
+const isEngineOwn = (x: unknown): boolean => Boolean(x && typeof x === 'object' && (x as { type?: unknown }).type === 'engine')
 
 const USAGE_H = 44
 const RING_R = 9
@@ -1685,10 +1828,10 @@ async function warnLimits($: EngineInterface): Promise<void> {
 const PLUGIN = 'agent-crew'
 const SETTINGS = 'agent-crew-settings'
 
-type Group = 'sections' | 'usage' | 'view' | 'notify'
+type Group = 'sections' | 'usage' | 'band' | 'view' | 'notify'
 type Field = { key: string; group: Group; default: boolean | string; choices?: readonly string[] }
 
-const GROUPS: readonly Group[] = ['sections', 'usage', 'view', 'notify']
+const GROUPS: readonly Group[] = ['sections', 'usage', 'band', 'view', 'notify']
 
 const FIELDS: readonly Field[] = [
   { key: 'showUsage', group: 'sections', default: true },
@@ -1699,6 +1842,10 @@ const FIELDS: readonly Field[] = [
   { key: 'usageContext', group: 'usage', default: true },
   { key: 'usageFiveHour', group: 'usage', default: true },
   { key: 'usageWeek', group: 'usage', default: true },
+  { key: 'bandAgents', group: 'band', default: true },
+  { key: 'bandProgress', group: 'band', default: false },
+  { key: 'bandUsage', group: 'band', default: false },
+  { key: 'statusLine', group: 'band', default: true },
   { key: 'autoOpen', group: 'view', default: true },
   { key: 'autoOpenFiles', group: 'view', default: true },
   { key: 'language', group: 'view', default: 'auto', choices: ['auto', 'de', 'en'] },
@@ -1713,7 +1860,7 @@ const FIELDS: readonly Field[] = [
 const FIELD_TEXT = {
   de: {
     title: 'Crew · Einstellungen',
-    groups: { sections: 'Abschnitte', usage: 'Nutzung', view: 'Allgemein', notify: 'Benachrichtigungen' } as Record<Group, string>,
+    groups: { sections: 'Abschnitte', usage: 'Nutzung', band: 'Über dem Prompt', view: 'Allgemein', notify: 'Benachrichtigungen' } as Record<Group, string>,
     version: 'Version',
     upToDate: 'Aktuell',
     available: (v: string) => `${v} verfügbar`,
@@ -1738,6 +1885,10 @@ const FIELD_TEXT = {
       usageContext: ['Kontext', 'Wie voll das Kontextfenster der Session ist'],
       usageFiveHour: ['5-Stunden-Limit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
       usageWeek: ['Wochenlimit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
+      bandAgents: ['Crew-Zeile', 'Laufende, fertige und fehlgeschlagene Subagenten und Konflikte, über dem Prompt'],
+      bandProgress: ['Fortschritt', 'Jeder laufende Subagent mit seinem Balken, über dem Prompt'],
+      bandUsage: ['Nutzung', 'Kontext und Limits mit der Zeit bis zum Zurücksetzen, über dem Prompt'],
+      statusLine: ['Statuszeile', 'Wie viele Subagenten laufen, in der Statuszeile von Claude Code'],
       autoOpen: ['Bei Subagenten öffnen', 'Das Panel öffnet sich, wenn der erste Subagent einer Session startet'],
       autoOpenFiles: ['Bei Dateiaktivität öffnen', 'Das Panel öffnet sich, wenn in einer Session zum ersten Mal eine Datei gelesen oder geändert wird'],
       language: ['Sprache', 'Automatisch folgt der Sprache von Claude Code, dann dem System'],
@@ -1757,7 +1908,7 @@ const FIELD_TEXT = {
   },
   en: {
     title: 'Crew · Settings',
-    groups: { sections: 'Sections', usage: 'Usage', view: 'General', notify: 'Notifications' } as Record<Group, string>,
+    groups: { sections: 'Sections', usage: 'Usage', band: 'Above the prompt', view: 'General', notify: 'Notifications' } as Record<Group, string>,
     version: 'Version',
     upToDate: 'Up to date',
     available: (v: string) => `${v} available`,
@@ -1782,6 +1933,10 @@ const FIELD_TEXT = {
       usageContext: ['Context', 'How full the session’s context window is'],
       usageFiveHour: ['5-hour limit', 'Use so far and time until it resets'],
       usageWeek: ['Weekly limit', 'Use so far and time until it resets'],
+      bandAgents: ['Crew line', 'Running, finished and failed subagents and conflicts, above the prompt'],
+      bandProgress: ['Progress', 'Each running subagent with its bar, above the prompt'],
+      bandUsage: ['Usage', 'Context and limits with the time until they reset, above the prompt'],
+      statusLine: ['Status line', 'How many subagents run, in Claude Code’s status line'],
       autoOpen: ['Open on subagents', 'The panel opens when the first subagent of a session starts'],
       autoOpenFiles: ['Open on file activity', 'The panel opens when a file is first read or changed in a session'],
       language: ['Language', 'Automatic follows Claude Code’s language, then the system'],
@@ -1825,6 +1980,7 @@ async function setOption($: EngineInterface, key: string, value: boolean | strin
     void $.ui.open({ id: SETTINGS, title: ft().title }).catch(() => undefined)
     if ((await $.ui.panes()).some(p => p.id === PANE)) void $.ui.open({ id: PANE, title: tr().pane }).catch(() => undefined)
   }
+  if (key === 'statusLine' || key === 'language') await refreshStatus($)
   await update($, settingsRev, n => (n ?? 0) + 1)
 }
 
@@ -1871,7 +2027,12 @@ export const register: Register = (on, options) => {
         // walk is a flip book of stills, one per redraw (CRAB_CSS in crab.ts).
         // Only where the crabs are pictures: the desktop pane, drawn of late.
         const isWalking = list.some(r => r.status === 'running') && at - desktopDrawnAt < 5_000 && flipAt(at) !== undefined
-        if (isWalking && !flipTimer) flipTimer = $.clock.every(FLIP_MS, () => void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined))
+        if (isWalking && !flipTimer)
+          flipTimer = $.clock.every(FLIP_MS, () => {
+            // A flip waits for the drawing under way to end.
+            if (drawing > 0) return
+            void $.clock.now().then(t => update($, now, () => t)).catch(() => undefined)
+          })
         if (!isWalking && flipTimer) {
           flipTimer.cancel()
           flipTimer = undefined
@@ -1911,6 +2072,117 @@ export const register: Register = (on, options) => {
   })
 
   // The settings pane: one framed group for display, one for notifications.
+  // The band above the prompt. A survey has it first. The platform shows one band;
+  // a plugin beneath that draws its own (savvy-progress during a flow) is kept,
+  // under ours, rather than pushed away.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
+    drawing++
+    try {
+      return await drawBand()
+    } finally {
+      drawing--
+    }
+    async function drawBand() {
+      await read($, settingsRev)
+      const list = await read($, runs)
+      const fileList = await read($, files)
+      const u = await read($, usage)
+      const ui = $.ui.resolve(e)
+      const { Box, Text } = ui
+      const Client = 'Client' in ui ? ui.Client : undefined
+      const BandSvg = e.surface === 'desktop' && 'Svg' in ui ? ui.Svg : undefined
+      // The clock only where something moves with it: the crabs' walk on the desktop,
+      // a bar, a reset's countdown. A band of counts alone redraws on changes only.
+      const isWalking = Boolean(BandSvg) && list.some(r => r.status === 'running')
+      const isTimed = isWalking || opts.bandProgress === true || opts.bandUsage === true
+      const at = isTimed ? Math.max(await read($, now), await $.clock.now()) : await $.clock.now()
+      // The band shows the crabs too: their flip book runs while it is drawn.
+      if (isWalking) desktopDrawnAt = at
+      const lines = bandLines(list, fileList, u, at)
+      const below = await next(e)
+      if (!lines.length) return below
+
+      // /compact beside the usage, as in the pane's usage section: a click region,
+      // so its press lands between redraws.
+      const compactChip = Client ? (
+        <Box key="band-compact-box" flexShrink={0} marginLeft={1}>
+          <Client key="band-compact" module="./hotspot.tsx" props={{ id: 'compact', line: [{ t: ' /compact ' }], bg: '#6b6b6833', hoverBg: '#6b6b6866' } satisfies HotspotProps} />
+        </Box>
+      ) : null
+
+      // On the desktop: pictures, the pane's crabs and usage rings, each under a
+      // click region, since a picture takes no press.
+      if (BandSvg && Client) {
+        const W = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 16))
+        const hasCrew = list.length > 0 && (opts.bandAgents !== false || (opts.bandProgress === true && list.some(r => r.status === 'running')))
+        const meters = opts.bandUsage === true ? metersOf(u).filter(m => opts[meterOption(m.key)] !== false) : []
+        const s = tr()
+        const hit = (key: string) => (
+          <Box key={`${key}-hitbox`} position="absolute" top={0} left={0} right={0} bottom={0}>
+            <Client key={key} module="./hotspot.tsx" width="100%" height="100%" props={{ id: 'band', hoverBg: '#3a3a3826' } satisfies HotspotProps} />
+          </Box>
+        )
+        const pictures = (
+          <Box key="crew-band" flexDirection="column">
+            {hasCrew ? (
+              <Box key="band-crew">
+                <BandSvg source={bandCrewSvg(W, list, fileList, at)} alt={s.bandOpen} width={W} height={BAND_CREW_H} />
+                {hit('band-0')}
+              </Box>
+            ) : null}
+            {meters.length ? (
+              <Box key="band-usage-row" flexDirection="row" alignItems="center">
+                <Box key="band-usage">
+                  <BandSvg source={usageSvg(W - COMPACT_W, meters, at)} alt={meters.map(m => `${m.percent}% ${m.label}`).join(', ')} width={W - COMPACT_W} height={USAGE_H} />
+                  {hit('band-1')}
+                </Box>
+                {compactChip}
+              </Box>
+            ) : null}
+          </Box>
+        )
+        if (hasCrew || meters.length) {
+          return isEngineOwn(below) ? pictures : (
+            <Box key="crew-band-stack" flexDirection="column">
+              {pictures}
+              {below}
+            </Box>
+          )
+        }
+      }
+
+      const ours = (
+        <Box key="crew-band" flexDirection="column">
+          {lines.map(({ kind, segs: line }, i) =>
+            Client ? (
+              <Box key={`band-row-${i}`} flexDirection="row">
+                <Box key={`band-cell-${i}`} flexGrow={1} flexShrink={1}>
+                  <Client key={`band-${i}`} module="./hotspot.tsx" width="100%" props={{ id: 'band', line: line.map(plainHot), hoverBg: '#3a3a3826' } satisfies HotspotProps} />
+                </Box>
+                {kind === 'usage' ? compactChip : null}
+              </Box>
+            ) : (
+              <Text key={`band-${i}`} wrap="truncate-end">
+                {line.map((sg, j) => (
+                  <Text key={`band-${i}-${j}`} color={sg.c} bold={sg.b} dimColor={sg.dim}>
+                    {sg.t}
+                  </Text>
+                ))}
+              </Text>
+            ),
+          )}
+        </Box>
+      )
+      return isEngineOwn(below) ? ours : (
+        <Box key="crew-band-stack" flexDirection="column">
+          {ours}
+          {below}
+        </Box>
+      )
+    }
+  })
+
   on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     await read($, settingsRev)
@@ -2196,6 +2468,21 @@ export const register: Register = (on, options) => {
   // A click in one of the pane's Clients: a tab of the tab strip, or a row of
   // the file tree.
   on('ui.message', async ($, e, next) => {
+    // The band's /compact: a dispatch of its own, as the pane's button does.
+    if (e.element === 'band-compact' && (e.data as { press?: unknown } | undefined)?.press === 'compact') {
+      $.clock.after(1, () => void $.command.run({ command: 'compact' }).catch(() => undefined))
+      return {}
+    }
+    // A click on the band above the prompt opens the pane: a dispatch of its own,
+    // as work started inside the click may end with it (onpress-work-dropped).
+    if (typeof e.element === 'string' && e.element.startsWith('band-') && (e.data as { press?: unknown } | undefined)?.press === 'band') {
+      $.clock.after(1, () =>
+        void (async () => {
+          if (!(await $.ui.panes()).some(p => p.id === PANE)) await togglePane($)
+        })().catch(() => undefined),
+      )
+      return {}
+    }
     if (e.requestId !== PANE || typeof e.element !== 'string' || !e.data || typeof e.data !== 'object') return next(e)
     if (e.element === 'tabs') {
       await blurSearch($)
@@ -2236,755 +2523,990 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const s = tr()
-    const ui = $.ui.resolve(e)
-    const { Box, Text, Button } = ui
-    const list = await read($, runs)
-    const allLogs = await read($, logs)
-    const p = await readPanel($)
-    const gone = await read($, cleared)
-    const fileList = await read($, files)
-    const g = await read($, git)
-    // Reading `now` redraws the pane: each second, and four times a second while
-    // a crab walks on the desktop (flipTimer). The time itself is the clock's,
-    // since a step redraws it in between too, and a crab or a gliding bar set by
-    // the last tick would jump back by the part of it gone since.
-    const at = Math.max(await read($, now), await $.clock.now(), ...list.map(r => r.startedAt), 0)
-    const viewed = e.props.view?.agentId
-    const byAgent = new Map(list.filter(r => r.agentId).map(r => [r.agentId ?? '', r]))
-    const base = g?.root ?? posix(await $.session.cwd())
-    const isDesktop = e.surface === 'desktop' && 'Svg' in ui
-
-    const activeCount = list.filter(isActive).length
-    const doneCount = list.length - activeCount
-    const shown = ordered(tabRuns(list, p.tab))
-    const t = totals(list, at, gone)
-    // Cost: the main chat's own requests and the subagents', apart.
-    const mainRaw = await read($, mainCost)
-    const main = { cost: mainRaw.cost, tokens: mainRaw.tokens, cache: mainRaw.cache ?? 0 }
-    const subs = { cost: t.cost, tokens: t.tokens, cache: t.cache }
-    const mainShare = main.cost + subs.cost > 0 ? main.cost / (main.cost + subs.cost) : 0
-    // The session totals (cost, tokens, time) are opt-in; each agent keeps its own.
-    const showTotals = opts.showTotals === true
-    const showUsage = opts.showUsage !== false
-    const showAgents = opts.showAgents !== false
-    const showFiles = opts.showFiles !== false
-    // Drawn again when a setting changes in the settings pane.
-    await read($, settingsRev)
-    const meters = metersOf(await read($, usage)).filter(m => opts[meterOption(m.key)] !== false)
-    // A new version shows beside the settings, which install it.
-    const up = await read($, updateInfo)
-    const newVersion = opts.checkUpdates !== false && up?.latest && isNewer(up.latest, up.current) && up.phase !== 'done' ? up.latest : ''
-    const settingsRow = (
-      <Box key="settings-row" flexDirection="row" justifyContent="flex-end" gap={2}>
-        {newVersion ? <Button key="update-badge" label={s.updateBadge(newVersion)} variant="primary" onPress={() => openSettings($)} /> : null}
-        <Button key="open-settings" label={`⚙ ${ft().open}`} plain onPress={() => openSettings($)} />
-      </Box>
-    )
-    const compactButton = (
-      <Button
-        key="run-compact"
-        label="/compact"
-        variant="secondary"
-        onPress={() => {
-          // A press's own work is dropped when the press ends: the run gets a dispatch of its own.
-          $.clock.after(1, () => void $.command.run({ command: 'compact' }).catch(() => undefined))
-        }}
-      />
-    )
-    const summary = `${activeCount} ${s.active.toLowerCase()} · ${doneCount} ${s.finished.toLowerCase()} · ≈${fmtCost(t.cost)}, ${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
-
-    // --- tabs: browser-style in a Client where the surface has one, Buttons elsewhere.
-    const Client = 'Client' in ui ? ui.Client : undefined
-    const tabSpecs: Tab[] = [
-      { id: 'active', icon: activeCount ? '●' : '○', label: s.active, count: activeCount, color: CLAY },
-      { id: 'done', icon: '✓', label: s.finished, count: doneCount, color: COMMIT_COLOR },
-    ]
-    // The desktop sets text in a proportional face, so box-drawing art cannot
-    // line up there: its tabs are bordered Boxes the app draws itself. Inside,
-    // a Client takes the press, so a click lands while the crabs' flip book
-    // redraws the pane; and while an agent runs, the Active tab's dot pulses.
-    const isAnyRunning = list.some(r => r.status === 'running')
-    const boxTabs = (
-      <Box key="tab-row" flexDirection="row" alignItems="flex-end">
-        {tabSpecs.map(t => {
-          const isOn = p.tab === t.id
-          const line: HotspotProps['line'] = [
-            { t: t.icon, c: isOn ? t.color : undefined, dim: !isOn, pulse: t.id === 'active' && isAnyRunning },
-            { t: ' ' },
-            { t: t.label, b: isOn, dim: !isOn },
-            { t: ' ' },
-            { t: String(t.count), c: isOn ? t.color : undefined, dim: true },
-          ]
-          // The pulse needs a colour, also on the tab not chosen.
-          if (line[0] && line[0].pulse) line[0].c = t.color
-          return (
-            <Box
-              key={`tabbox-${t.id}`}
-              flexDirection="row"
-              alignItems="center"
-              borderStyle="round"
-              borderColor={isOn ? t.color : '#6b6b68'}
-              borderDimColor={!isOn}
-              paddingX={1}
-              marginRight={1}
-              hover={{ borderColor: isOn ? t.color : '#9a9a96' }}
-            >
-              {Client ? (
-                <Client key={`tabhit-${t.id}`} module="./hotspot.tsx" props={{ id: t.id, line: line.map(plainHot) } satisfies HotspotProps} />
-              ) : (
-                <Button key={`tab-${t.id}`} plain onPress={() => setPanel($, () => ({ tab: t.id as CrewTab }))}>
-                  <Text color={isOn ? t.color : undefined} dimColor={!isOn}>
-                    {t.icon}
-                  </Text>{' '}
-                  <Text bold={isOn} dimColor={!isOn}>
-                    {t.label}
-                  </Text>{' '}
-                  <Text color={isOn ? t.color : undefined} dimColor>
-                    {String(t.count)}
-                  </Text>
-                </Button>
-              )}
-            </Box>
-          )
-        })}
-      </Box>
-    )
-    const tabStrip =
-      e.surface === 'desktop' ? (
-        boxTabs
-      ) : Client ? (
-        <Client
-          key="tabs"
-          module="./tabs.tsx"
-          width="100%"
-          height={3}
-          props={{ tabs: tabSpecs, active: p.tab, line: '#8a8a86', dim: '#6b6b68' } satisfies TabsProps}
-        />
-      ) : (
-        <Box flexDirection="row" gap={1}>
-          {tabSpecs.map(t => (
-            <Button
-              key={`tab-${t.id}`}
-              label={`${t.icon} ${t.label} · ${t.count}`}
-              variant={p.tab === t.id ? 'primary' : 'secondary'}
-              onPress={() => setPanel($, () => ({ tab: t.id as CrewTab }))}
-            />
-          ))}
+    // A drawing that throws shows its error, not an empty pane: the desktop says
+    // only that nothing was drawn, and no log may be on to say why.
+    drawing++
+    try {
+      return await drawPane()
+    } catch (err) {
+      const { Box, Text } = $.ui.resolve(e)
+      const text = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err)
+      return (
+        <Box key="pane-error" flexDirection="column">
+          <Text color="red">agent-crew could not draw this pane:</Text>
+          <Text dimColor>{text.slice(0, 3000)}</Text>
         </Box>
       )
-    const toggleCompact = (
-      <Button key="compact" label={p.isCompact ? `⤢ ${s.expand}` : `⤡ ${s.collapse}`} variant="secondary" onPress={() => setPanel($, q => ({ isCompact: !q.isCompact }))} />
-    )
-    // A real button, at the bottom right of the agents' frame.
-    const clearDone =
-      doneCount > 0 ? (
-        <Box key="clear-row" flexDirection="row" justifyContent="flex-end" marginTop={1}>
-          <Button
-            key="clear"
-            label={`✕ ${s.clear} (${doneCount})`}
-            variant="secondary"
-            onPress={async () => {
-              // What leaves is what the one write took off: an agent that ends in
-              // between is either kept or retired, never dropped unaccounted.
-              let gone: CrewRun[] = []
-              await update($, runs, l => {
-                gone = l.filter(r => !isActive(r))
-                return l.filter(isActive)
-              })
-              await retire($, gone)
-              // A focus on an agent that is gone would dim the tree with no way back.
-              if (gone.some(r => r.agentId && r.agentId === p.focusAgent)) await setPanel($, () => ({ focusAgent: undefined }))
-            }}
-          />
-        </Box>
-      ) : null
+    } finally {
+      drawing--
+    }
+    async function drawPane() {
+      const s = tr()
+      const ui = $.ui.resolve(e)
+      const { Box, Text, Button } = ui
+      const list = await read($, runs)
+      const allLogs = await read($, logs)
+      const p = await readPanel($)
+      const gone = await read($, cleared)
+      const fileList = await read($, files)
+      const g = await read($, git)
+      // Reading `now` redraws the pane: each second, and four times a second while
+      // a crab walks on the desktop (flipTimer). The time itself is the clock's,
+      // since a step redraws it in between too, and a crab or a gliding bar set by
+      // the last tick would jump back by the part of it gone since.
+      const at = Math.max(await read($, now), await $.clock.now(), ...list.map(r => r.startedAt), 0)
+      const viewed = e.props.view?.agentId
+      const byAgent = new Map(list.filter(r => r.agentId).map(r => [r.agentId ?? '', r]))
+      const base = g?.root ?? posix(await $.session.cwd())
+      const isDesktop = e.surface === 'desktop' && 'Svg' in ui
 
-    // --- one run's details: task, recent actions, files, answer.
-    const details = (r: CrewRun) => {
-      const entries = (r.agentId ? allLogs[r.agentId] : undefined) ?? []
-      const recent = entries.slice(-10).reverse()
-      const mine = r.agentId ? fileList.filter(f => f.agents.includes(r.agentId ?? '')) : []
-      const reads = mine.filter(f => f.reads > 0).length
-      const writes = mine.filter(f => f.writes > 0).length
-      // Drawn inside the agent's card, which carries the indent and the colour.
-      const pad = ''
-      return (
-        <Box key={`det-${r.id}`} flexDirection="column" marginTop={1}>
-          {r.prompt && (
-            <Text dimColor wrap="wrap">
-              {pad}
-              {s.task}: {oneLine(r.prompt, 280)}
-            </Text>
-          )}
-          <Text bold>
-            {pad}
-            {s.recent}
-          </Text>
-          {recent.length === 0 && (
-            <Text dimColor>
-              {pad}
-              {s.nothingYet}
-            </Text>
-          )}
-          {recent.map((l, i) => (
-            <Text key={`log-${r.id}-${i}`} wrap="truncate-end">
-              {pad}
-              <Text dimColor>{fmtAgo(at - l.at).padStart(4)} </Text>
-              {l.kind === 'say' ? (
-                <Text italic dimColor>
-                  💬 {oneLine(l.text, 200)}
-                </Text>
-              ) : (
-                <Text>
-                  <Text color={l.isError ? 'red' : colorOf(r)} bold>
-                    {l.tool}
-                  </Text>{' '}
-                  {l.text}
-                  {l.isError ? ' ✗' : ''}
-                </Text>
-              )}
-            </Text>
-          ))}
-          {mine.length > 0 && (
-            <Box flexDirection="row" gap={1}>
-              <Text dimColor>
-                {pad}
-                {s.touched(reads, writes)}
-              </Text>
+      const activeCount = list.filter(isActive).length
+      const doneCount = list.length - activeCount
+      const shown = ordered(tabRuns(list, p.tab))
+      const t = totals(list, at, gone)
+      // Cost: the main chat's own requests and the subagents', apart.
+      const mainRaw = await read($, mainCost)
+      const main = { cost: mainRaw.cost, tokens: mainRaw.tokens, cache: mainRaw.cache ?? 0 }
+      const subs = { cost: t.cost, tokens: t.tokens, cache: t.cache }
+      const mainShare = main.cost + subs.cost > 0 ? main.cost / (main.cost + subs.cost) : 0
+      // The session totals (cost, tokens, time) are opt-in; each agent keeps its own.
+      const showTotals = opts.showTotals === true
+      const showUsage = opts.showUsage !== false
+      const showAgents = opts.showAgents !== false
+      const showFiles = opts.showFiles !== false
+      // Drawn again when a setting changes in the settings pane.
+      await read($, settingsRev)
+      const meters = metersOf(await read($, usage)).filter(m => opts[meterOption(m.key)] !== false)
+      // A new version shows beside the settings, which install it.
+      const up = await read($, updateInfo)
+      const newVersion = opts.checkUpdates !== false && up?.latest && isNewer(up.latest, up.current) && up.phase !== 'done' ? up.latest : ''
+      const settingsRow = (
+        <Box key="settings-row" flexDirection="row" justifyContent="flex-end" gap={2}>
+          {newVersion ? <Button key="update-badge" label={s.updateBadge(newVersion)} variant="primary" onPress={() => openSettings($)} /> : null}
+          <Button key="open-settings" label={`⚙ ${ft().open}`} plain onPress={() => openSettings($)} />
+        </Box>
+      )
+      const compactButton = (
+        <Button
+          key="run-compact"
+          label="/compact"
+          variant="secondary"
+          onPress={() => {
+            // A press's own work is dropped when the press ends: the run gets a dispatch of its own.
+            $.clock.after(1, () => void $.command.run({ command: 'compact' }).catch(() => undefined))
+          }}
+        />
+      )
+      const summary = `${activeCount} ${s.active.toLowerCase()} · ${doneCount} ${s.finished.toLowerCase()} · ≈${fmtCost(t.cost)}, ${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
+
+      // --- tabs: browser-style in a Client where the surface has one, Buttons elsewhere.
+      const Client = 'Client' in ui ? ui.Client : undefined
+      const tabSpecs: Tab[] = [
+        { id: 'active', icon: activeCount ? '●' : '○', label: s.active, count: activeCount, color: CLAY },
+        { id: 'done', icon: '✓', label: s.finished, count: doneCount, color: COMMIT_COLOR },
+      ]
+      // The desktop sets text in a proportional face, so box-drawing art cannot
+      // line up there: its tabs are bordered Boxes the app draws itself. Inside,
+      // a Client takes the press, so a click lands while the crabs' flip book
+      // redraws the pane; and while an agent runs, the Active tab's dot pulses.
+      const isAnyRunning = list.some(r => r.status === 'running')
+      const boxTabs = (
+        <Box key="tab-row" flexDirection="row" alignItems="flex-end">
+          {tabSpecs.map(t => {
+            const isOn = p.tab === t.id
+            const line: HotspotProps['line'] = [
+              { t: t.icon, c: isOn ? t.color : undefined, dim: !isOn, pulse: t.id === 'active' && isAnyRunning },
+              { t: ' ' },
+              { t: t.label, b: isOn, dim: !isOn },
+              { t: ' ' },
+              { t: String(t.count), c: isOn ? t.color : undefined, dim: true },
+            ]
+            // The pulse needs a colour, also on the tab not chosen.
+            if (line[0] && line[0].pulse) line[0].c = t.color
+            return (
+              <Box
+                key={`tabbox-${t.id}`}
+                flexDirection="row"
+                alignItems="center"
+                borderStyle="round"
+                borderColor={isOn ? t.color : '#6b6b68'}
+                borderDimColor={!isOn}
+                paddingX={1}
+                marginRight={1}
+                hover={{ borderColor: isOn ? t.color : '#9a9a96' }}
+              >
+                {Client ? (
+                  <Client key={`tabhit-${t.id}`} module="./hotspot.tsx" props={{ id: t.id, line: line.map(plainHot) } satisfies HotspotProps} />
+                ) : (
+                  <Button key={`tab-${t.id}`} plain onPress={() => setPanel($, () => ({ tab: t.id as CrewTab }))}>
+                    <Text color={isOn ? t.color : undefined} dimColor={!isOn}>
+                      {t.icon}
+                    </Text>{' '}
+                    <Text bold={isOn} dimColor={!isOn}>
+                      {t.label}
+                    </Text>{' '}
+                    <Text color={isOn ? t.color : undefined} dimColor>
+                      {String(t.count)}
+                    </Text>
+                  </Button>
+                )}
+              </Box>
+            )
+          })}
+        </Box>
+      )
+      const tabStrip =
+        e.surface === 'desktop' ? (
+          boxTabs
+        ) : Client ? (
+          <Client
+            key="tabs"
+            module="./tabs.tsx"
+            width="100%"
+            height={3}
+            props={{ tabs: tabSpecs, active: p.tab, line: '#8a8a86', dim: '#6b6b68' } satisfies TabsProps}
+          />
+        ) : (
+          <Box flexDirection="row" gap={1}>
+            {tabSpecs.map(t => (
               <Button
-                key={`focus-${r.id}`}
-                label={p.focusAgent === r.agentId ? s.focusOff : s.focusOn}
-                plain
-                onPress={() => setPanel($, q => ({ focusAgent: q.focusAgent === r.agentId ? undefined : r.agentId }))}
+                key={`tab-${t.id}`}
+                label={`${t.icon} ${t.label} · ${t.count}`}
+                variant={p.tab === t.id ? 'primary' : 'secondary'}
+                onPress={() => setPanel($, () => ({ tab: t.id as CrewTab }))}
               />
-            </Box>
-          )}
-          {r.lastAnswer && (
-            <Text bold>
-              {pad}
-              {s.answer}
-            </Text>
-          )}
-          {r.lastAnswer &&
-            ('Markdown' in ui ? (
-              <ui.Markdown key={`ans-${r.id}`} text={r.lastAnswer.slice(0, 1500) + (r.lastAnswer.length > 1500 ? ' …' : '')} />
-            ) : (
-              <Text wrap="wrap">{oneLine(r.lastAnswer, 600)}</Text>
             ))}
-          {r.lastAnswer && (
+          </Box>
+        )
+      const toggleCompact = (
+        <Button key="compact" label={p.isCompact ? `⤢ ${s.expand}` : `⤡ ${s.collapse}`} variant="secondary" onPress={() => setPanel($, q => ({ isCompact: !q.isCompact }))} />
+      )
+      // A real button, at the bottom right of the agents' frame.
+      const clearDone =
+        doneCount > 0 ? (
+          <Box key="clear-row" flexDirection="row" justifyContent="flex-end" marginTop={1}>
             <Button
-              key={`copy-${r.id}`}
-              label={s.copy}
-              plain
+              key="clear"
+              label={`✕ ${s.clear} (${doneCount})`}
+              variant="secondary"
               onPress={async () => {
-                await $.ui.copy({ text: r.lastAnswer ?? '' })
-                $.ui.toast(s.copied)
+                // What leaves is what the one write took off: an agent that ends in
+                // between is either kept or retired, never dropped unaccounted.
+                let gone: CrewRun[] = []
+                await update($, runs, l => {
+                  gone = l.filter(r => !isActive(r))
+                  return l.filter(isActive)
+                })
+                await retire($, gone)
+                // A focus on an agent that is gone would dim the tree with no way back.
+                if (gone.some(r => r.agentId && r.agentId === p.focusAgent)) await setPanel($, () => ({ focusAgent: undefined }))
               }}
             />
-          )}
-        </Box>
-      )
-    }
-
-    // Sits at the right of its agent's first line.
-    const detailsButton = (r: CrewRun) => {
-      const isOpen = p.expanded.includes(r.id)
-      return (
-        <Button
-          key={`d-${r.id}`}
-          label={isOpen ? '▾' : '▸'}
-          plain
-          onPress={() =>
-            setPanel($, q => ({ expanded: q.expanded.includes(r.id) ? q.expanded.filter(x => x !== r.id) : [...q.expanded, r.id].slice(-20) }))
-          }
-        />
-      )
-    }
-
-    // --- the files section.
-    // The search line narrows the tree to the paths that hold what was typed.
-    // A folder entered by a double press narrows it to that folder, labels relative.
-    const query = (p.fileQuery ?? '').trim().toLowerCase()
-    const root = p.fileRoot ?? ''
-    const everyFile = await read($, tree)
-    if (p.fileFilter === 'all' && !everyFile) $.clock.after(1, () => void syncTree($).catch(() => undefined))
-    const allViews = underFolder(fileViews(fileList, g, base, p.fileFilter, everyFile?.paths), root, fold)
-    const views = query ? allViews.filter(v => v.label.toLowerCase().includes(query)) : allViews
-    const treeAll = rowsUnder(views.map(v => ({ key: v.key, label: v.label })), root, fold)
-    const dirKeys = treeAll.filter(r => r.isDir).map(r => r.key)
-    // Folders are shut until opened; a search opens every one that holds a hit,
-    // and a file just read, changed or committed opens its folders while it
-    // shimmers, so what the agents touch shows. They shut again after, unless opened.
-    const openDirs = new Set(p.openDirs ?? [])
-    const shutAt = p.shutAt ?? {}
-    const freshDirs = new Set(
-      views.flatMap(v => (v.file && at - v.file.lastAt < FRESH_MS ? folderKeys(v.label, root, fold).filter(k => (shutAt[k] ?? -Infinity) < (v.file?.lastAt ?? 0)) : [])),
-    )
-    const shut = new Set(query ? [] : dirKeys.filter(k => !openDirs.has(k) && !freshDirs.has(k)))
-    const isAllShut = dirKeys.length > 0 && dirKeys.every(k => shut.has(k))
-    const branch = g ? `⑂ ${g.branch || 'HEAD'}${g.ahead ? ` ↑${g.ahead}` : ''}${g.behind ? ` ↓${g.behind}` : ''}` : ''
-    const focusRun = p.focusAgent ? byAgent.get(p.focusAgent) : undefined
-    const filesHeader = (
-      <Box key="files-head" flexDirection="row" alignItems="center" gap={2} marginBottom={p.isFilesCollapsed ? 0 : 1}>
-        <Button
-          key="files-toggle"
-          label={`${p.isFilesCollapsed ? '▸' : '▾'} ${s.files} · ${views.length}`}
-          plain
-          onPress={() => setPanel($, q => ({ isFilesCollapsed: !q.isFilesCollapsed }))}
-        />
-        <Text dimColor>│</Text>
-        {(['activity', 'changed', 'all'] as const).map(id => (
-          <Button
-            key={`files-filter-${id}`}
-            label={s.fileFilters[id]}
-            variant={p.fileFilter === id ? 'primary' : 'secondary'}
-            onPress={async () => {
-              await setPanel($, () => ({ fileFilter: id }))
-              // A press's own work ends with it: the list is read in a dispatch of its own.
-              if (id === 'all') $.clock.after(1, () => void syncTree($).catch(() => undefined))
-            }}
-          />
-        ))}
-        {focusRun && (
-          <Button key="focus-clear" plain onPress={() => setPanel($, () => ({ focusAgent: undefined }))}>
-            <Text color={colorOf(focusRun)}>◎ {oneLine(focusRun.description || typeLabel(focusRun), 30)}</Text> ✕
-          </Button>
-        )}
-        <Box flexGrow={1} />
-        {/* A search shows every folder with a hit open: nothing to fold then. */}
-        {!p.isFilesCollapsed && !query && dirKeys.length > 0 && (
-          <Button
-            key="files-fold-all"
-            label={isAllShut ? '⊞' : '⊟'}
-            plain
-            dimColor
-            onPress={async () => {
-              const t = await $.clock.now()
-              await setPanel($, q => {
-                const open = (q.openDirs ?? []).filter(k => !dirKeys.includes(k))
-                if (isAllShut) return { openDirs: [...open, ...dirKeys].slice(-500) }
-                // Shut means shut, also for folders a fresh file holds open.
-                const shutAt = { ...(q.shutAt ?? {}), ...Object.fromEntries(dirKeys.map(k => [k, t])) }
-                return { openDirs: open, shutAt: Object.fromEntries(Object.entries(shutAt).slice(-200)) }
-              })
-            }}
-          />
-        )}
-        <Button key="files-refresh" label="↻" plain dimColor onPress={() => syncGit($)} />
-      </Box>
-    )
-
-    // Breadcrumbs under the search line, the main folder first and the branch
-    // last: a heading, so it reads larger than the rows. Once a folder is
-    // entered, the steps above it are links (the folder's own file: URL) back up.
-    const crumbs = root.split('/').filter(Boolean)
-    const folderUrl = (tree: string): string => {
-      const abs = !tree ? base : tree.startsWith('~') ? home + tree.slice(1) : /^[A-Za-z]:/.test(tree) || base === '' ? tree : `${base}/${tree}`
-      return encodeURI(`file:///${abs.replace(/^\//, '')}`)
-    }
-    const steps = [{ label: `⌂ ${base.split('/').pop() || base}`, tree: '' }, ...crumbs.map((c, i) => ({ label: c, tree: crumbs.slice(0, i + 1).join('/') }))]
-    const crumbLinks = steps.slice(0, -1).map(st => ({ ...st, href: folderUrl(st.tree) }))
-    const crumbText =
-      [...crumbLinks.map(st => `[${st.label.replace(/[[\]]/g, '')}](${st.href})`), `**${steps.at(-1)?.label ?? ''}**`].join(' › ') +
-      (branch ? `  \`${branch}\`` : '')
-    const Md = 'Markdown' in ui ? ui.Markdown : undefined
-    const crumbRow =
-      !p.isFilesCollapsed && Md ? (
-        <Box key="files-crumbs-box" marginY={1}>
-          <Md
-            key="files-crumbs"
-            text={`#### ${crumbText}`}
-            pressableLinks={crumbLinks.map(st => st.href)}
-            onLinkPress={(link: { href: string }) => {
-              const st = crumbLinks.find(x => x.href === link.href)
-              if (st) void setPanel($, () => ({ fileRoot: st.tree || undefined, openFile: undefined }))
-            }}
-          />
-        </Box>
-      ) : null
-
-    // The search line: on the cell grid where the surface has a Client, the
-    // frame's whole width and no button; elsewhere the surface's own field. Enter
-    // opens the first hit's history and diff.
-    const SearchInput = 'Input' in ui ? ui.Input : undefined
-    const searchRow =
-      !p.isFilesCollapsed && allViews.length > 0 ? (
-        Client ? (
-          <Client
-            key="search"
-            module="./searchbox.tsx"
-            width="100%"
-            props={{ value: p.fileQuery ?? '', placeholder: s.search, hits: query ? s.hits(views.length) : '', line: '#6b6b68', accent: CLAY, isFocused: p.isSearchFocused === true } satisfies SearchBoxProps}
-          />
-        ) : SearchInput ? (
-          <Box key="files-search" flexDirection="row" alignItems="center" gap={1}>
-            <Box flexGrow={1}>
-              <SearchInput
-                key="file-q"
-                placeholder={s.search}
-                value={p.fileQuery ?? ''}
-                onInput={(text: string) => void setPanel($, () => ({ fileQuery: text }))}
-                onSubmit={(text: string) => void openFirstHit($, text)}
-              />
-            </Box>
-            {query ? <Text dimColor>{s.hits(views.length)}</Text> : null}
-            {query ? <Button key="file-q-clear" label="×" plain onPress={() => setPanel($, () => ({ fileQuery: '' }))} /> : null}
           </Box>
         ) : null
-      ) : null
 
-    // About 8 CSS px a column on the desktop, less the frame's border and padding.
-    const desktopW = Math.max(220, Math.min(900, ((e.props.bodyColumns || 40) - FRAME_COLS) * 8 - 8))
-
-    // A thin rule across the frame: drawn as a picture of its width on the
-    // desktop, whose lines are taller than a cell; as many dashes as cells elsewhere.
-    const RuleSvg = isDesktop && 'Svg' in ui ? ui.Svg : undefined
-    const ruleRow = (key: string) =>
-      RuleSvg ? (
-        <RuleSvg key={key} source={svg(desktopW, 9, `<line x1="0" y1="4.5" x2="${desktopW}" y2="4.5" stroke="#6b6b68" stroke-opacity=".6" stroke-width="1"/>`, false)} alt="—" width={desktopW} height={9} />
-      ) : (
-        <Text key={key} dimColor>
-          {'─'.repeat(Math.max(10, (e.props.bodyColumns || 40) - FRAME_COLS))}
-        </Text>
-      )
-
-    // One file row is one Button: a press opens its history and diff beneath it.
-    const fileTree = visibleRows(treeAll, shut)
-    const viewByKey = new Map(views.map(v => [v.key, v]))
-    const openDiff = await read($, diff)
-    // An open file's card: its history and its changes against HEAD (the text
-    // of a new file) in two tabs, with Open beside them; a file git sees no
-    // change in has its history alone, no tabs and no heading. The tab chosen stays for the
-    // next file; absent a choice, the changes.
-    const fileDetails = (v: FileView, pad: string) => {
-      const hist = [...(v.file?.history ?? [])].reverse()
-      const d = openDiff && openDiff.key === v.key ? openDiff : null
-      const Code = 'Code' in ui ? ui.Code : undefined
-      const hasChanges = Boolean(d || v.gitFile)
-      const tab = !hasChanges || p.fileTab === 'history' ? 'history' : 'changes'
-      const badge = gitBadge(v)
-      const tabs = [
-        { id: 'history' as const, label: s.history, count: hist.length ? String(hist.length) : '' },
-        ...(hasChanges ? [{ id: 'changes' as const, label: d?.format === 'source' ? s.newFile : s.changes, count: badge }] : []),
-      ]
-      return (
-        <Box key={`fd-${v.key}`} flexDirection="column" marginTop={1}>
-          {v.file?.conflict && v.file.conflict.length > 1 && (
-            <Text color="red">
-              {pad}
-              {s.conflictLine(v.file.conflict.map(a => (a === 'main' ? s.main : byAgent.get(a)?.description || a.slice(0, 8))).join(', '))}
-            </Text>
-          )}
-          <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-            {hasChanges ? (
-              <Box flexDirection="row" alignItems="center" gap={1}>
-                {tabs.map(t => (
-                  <Button
-                    key={`ftab-${t.id}`}
-                    label={t.count ? `${t.label} ${t.count}` : t.label}
-                    variant={tab === t.id ? 'primary' : 'secondary'}
-                    onPress={() => setPanel($, () => ({ fileTab: t.id }))}
-                  />
-                ))}
-              </Box>
-            ) : (
-              <Box />
+      // --- one run's details: task, recent actions, files, answer.
+      const details = (r: CrewRun) => {
+        const entries = (r.agentId ? allLogs[r.agentId] : undefined) ?? []
+        const recent = entries.slice(-10).reverse()
+        const mine = r.agentId ? fileList.filter(f => f.agents.includes(r.agentId ?? '')) : []
+        const reads = mine.filter(f => f.reads > 0).length
+        const writes = mine.filter(f => f.writes > 0).length
+        // Drawn inside the agent's card, which carries the indent and the colour.
+        const pad = ''
+        return (
+          <Box key={`det-${r.id}`} flexDirection="column" marginTop={1}>
+            {r.prompt && (
+              <Text dimColor wrap="wrap">
+                {pad}
+                {s.task}: {oneLine(r.prompt, 280)}
+              </Text>
             )}
-            <Button key={`open-${v.key}`} label={`↗ ${s.openIt}`} variant="secondary" onPress={() => openFile($, v.file?.path ?? v.gitFile?.path ?? v.key)} />
-          </Box>
-          <Box flexDirection="column" marginTop={1}>
-            {tab === 'history' &&
-              hist.map((ev, i) => (
-                <Text key={`h-${v.key}-${i}`} wrap="truncate-end">
-                  {pad}
-                  <Text dimColor>{fmtAgo(at - ev.at).padStart(4)} </Text>
-                  <Text color={ev.kind === 'read' ? READ_COLOR : ev.kind === 'write' ? WRITE_COLOR : COMMIT_COLOR}>{s.histKind[ev.kind]}</Text>
-                  <Text dimColor> · </Text>
-                  <Text color={agentColor(ev.agent, byAgent)}>
-                    {ev.agent === 'main' ? s.main : ev.agent === 'git' ? 'git' : byAgent.get(ev.agent)?.description || ev.agent.slice(0, 8)}
-                  </Text>
-                </Text>
-              ))}
-            {tab === 'history' && hist.length === 0 && <Text dimColor>{s.noHistory}</Text>}
-            {tab === 'changes' && d && Code && <Code key={`code-${v.key}`} source={d.text} format={d.format} path={v.label} wrap="truncate-end" />}
-            {tab === 'changes' && d && !Code && <Text>{d.text.slice(0, 2000)}</Text>}
-            {tab === 'changes' && !d && (
+            <Text bold>
+              {pad}
+              {s.recent}
+            </Text>
+            {recent.length === 0 && (
               <Text dimColor>
                 {pad}
-                {s.noDiff}
+                {s.nothingYet}
               </Text>
             )}
-          </Box>
-        </Box>
-      )
-    }
-    // One row a file, as filetree's: a press on it opens its card (history and
-    // diff), a double press the file itself; a folder shuts and opens on a press.
-    // Where the surface has a Client the rows are drawn on its cell grid, a fresh
-    // name shimmering while it still takes presses; elsewhere each row is a Button.
-    // A shut folder sums up the files inside it; an open one leaves that to its rows.
-    const beneath = filesBeneath(treeAll)
-    const folderSigns = (key: string): Seg[] =>
-      shut.has(key) ? folderSummary((beneath.get(key) ?? []).flatMap(k => viewByKey.get(k) ?? []), byAgent, focusRun ? p.focusAgent : undefined) : []
-    const fileRowsOf = (rows: TreeRow[], base: number): FileRowSpec[] =>
-      rows.flatMap((r): FileRowSpec[] => {
-        const indent = '  '.repeat(Math.max(0, r.depth - base))
-        if (r.isDir) return [{ id: r.key, isOpen: !shut.has(r.key), left: [{ t: `${indent}${shut.has(r.key) ? '▸' : '▾'} ${r.name}/`, dim: true }], right: folderSigns(r.key) }]
-        const v = viewByKey.get(r.key)
-        if (!v) return []
-        const color = fileColor(v)
-        const badge = gitBadge(v)
-        const isFresh = Boolean(v.file && at - v.file.lastAt < FRESH_MS)
-        const isOpen = p.openFile === v.key
-        // Only while the focused agent is listed, and so its ✕ in the header with it.
-        const isDim = Boolean(focusRun && p.focusAgent && !(v.file?.agents ?? []).includes(p.focusAgent))
-        const tone = isFresh && !isDim ? (isDeleted(v) ? 'delete' : (v.file?.lastKind ?? 'read')) : undefined
-        const right: Seg[] = (v.file?.agents.slice(0, 6) ?? []).map(a => ({ t: '●', c: agentColor(a, byAgent), dim: isDim }))
-        if (badge) right.push({ t: ` ${badge}`, c: badgeColor(v), dim: isDim })
-        if ((v.file?.conflict?.length ?? 0) > 1) right.push({ t: ' ⚠', c: '#D0453F' })
-        right.push({ t: ` ${isOpen ? '▾' : '▸'} `, dim: true })
-        return [
-          {
-            id: r.key,
-            left: [
-              { t: indent },
-              { t: `${fileGlyph(v)} `, c: color, dim: isDim, sh: tone },
-              { t: r.name, b: isFresh || isOpen, c: isOpen ? color : undefined, dim: isDim || isUntouched(v), sh: tone },
-            ],
-            right,
-          },
-        ]
-      })
-    const rowsClient = (key: string, rows: TreeRow[], base = 0) =>
-      Client && rows.length > 0 ? (
-        <Client
-          key={key}
-          module="./filerows.tsx"
-          width="100%"
-          props={{ rows: fileRowsOf(rows, base).map(r => ({ ...r, left: r.left.map(plainSeg), right: r.right.map(plainSeg) })), tones: SHIMMER, hoverBg: '#3a3a3826' } satisfies FileRowsProps}
-        />
-      ) : null
-
-    // Without a Client: a Button a row, the same presses.
-    const buttonRow = (r: TreeRow) => {
-      if (r.isDir)
-        return (
-          <Box key={`f-${r.key}`} flexDirection="row" justifyContent="space-between" gap={1} marginLeft={r.depth * 2}>
-            <Button key={`dir-${r.key}`} plain dimColor onPress={() => pressRow($, r.key, !shut.has(r.key))}>
-              {shut.has(r.key) ? '▸' : '▾'} {r.name}/
-            </Button>
-            <Text>
-              {folderSigns(r.key).map((sg, i) => (
-                <Text key={`ds-${r.key}-${i}`} color={sg.c} dimColor={sg.dim}>
-                  {sg.t}
-                </Text>
-              ))}
-            </Text>
-          </Box>
-        )
-      const v = viewByKey.get(r.key)
-      if (!v) return null
-      const color = fileColor(v)
-      const badge = gitBadge(v)
-      const isOpen = p.openFile === v.key
-      return (
-        <Box key={`f-${r.key}`} flexDirection="row" justifyContent="space-between" gap={1} marginLeft={isOpen ? 0 : r.depth * 2}>
-          <Button key={`file-${r.key}`} plain onPress={() => pressRow($, v.key)}>
-            <Text color={color}>{`${fileGlyph(v)} `}</Text>
-            <Text bold={isOpen}>{r.name}</Text>
-          </Button>
-          <Text>
-            {(v.file?.agents.slice(0, 6) ?? []).map(a => (
-              <Text key={`fa-${r.key}-${a}`} color={agentColor(a, byAgent)}>
-                ●
+            {recent.map((l, i) => (
+              <Text key={`log-${r.id}-${i}`} wrap="truncate-end">
+                {pad}
+                <Text dimColor>{fmtAgo(at - l.at).padStart(4)} </Text>
+                {l.kind === 'say' ? (
+                  <Text italic dimColor>
+                    💬 {oneLine(l.text, 200)}
+                  </Text>
+                ) : (
+                  <Text>
+                    <Text color={l.isError ? 'red' : colorOf(r)} bold>
+                      {l.tool}
+                    </Text>{' '}
+                    {l.text}
+                    {l.isError ? ' ✗' : ''}
+                  </Text>
+                )}
               </Text>
             ))}
-            {badge ? <Text color={badgeColor(v)}> {badge}</Text> : null}
-            {(v.file?.conflict?.length ?? 0) > 1 ? <Text color="red"> ⚠</Text> : null}
-          </Text>
-        </Box>
-      )
-    }
-
-    // The open file and its card sit between the rows above and below it.
-    const shownRows = fileTree.slice(0, MAX_FILE_ROWS)
-    const openIdx = shownRows.findIndex(r => !r.isDir && r.key === p.openFile)
-    const openRow = openIdx >= 0 ? shownRows[openIdx] : undefined
-    const openView = openRow ? viewByKey.get(openRow.key) : undefined
-    const above = openIdx >= 0 ? shownRows.slice(0, openIdx) : shownRows
-    const below = openIdx >= 0 ? shownRows.slice(openIdx + 1) : []
-    const rowsOf = (key: string, rows: TreeRow[], base = 0) => (Client ? rowsClient(key, rows, base) : rows.map(buttonRow))
-    const openCard =
-      openRow && openView ? (
-        // The card spans the tree's width; only its row keeps the tree's indent, one
-        // step less for the card's border and padding, so the name stays in line.
-        <Box key="f-open" {...card((openView.file?.conflict?.length ?? 0) > 1 ? '#D0453F' : fileColor(openView), 0)}>
-          {rowsOf('rows-o', [openRow], Math.min(1, openRow.depth))}
-          {fileDetails(openView, '')}
-        </Box>
-      ) : null
-    const filesBody = (
-      <Box key="files-body" flexDirection="column">
-        {!p.isFilesCollapsed && views.length === 0 && <Text dimColor>{query ? s.noHits : s.noFiles}</Text>}
-        {!p.isFilesCollapsed && rowsOf('rows-a', above)}
-        {!p.isFilesCollapsed && openCard}
-        {!p.isFilesCollapsed && rowsOf('rows-b', below)}
-        {!p.isFilesCollapsed && fileTree.length > MAX_FILE_ROWS && <Text dimColor>{s.more(fileTree.length - MAX_FILE_ROWS)}</Text>}
-        {!p.isFilesCollapsed && views.length > 0 && (
-          // Set off from the tree by a rule; each sign in the colour it marks.
-          <Box key="files-legend" flexDirection="column" marginTop={1}>
-            {ruleRow('files-rule')}
-            <Text>
-              {(
-                [
-                  ['◉', READ_COLOR, s.legend.read],
-                  ['✎', WRITE_COLOR, s.legend.write],
-                  ['✓', COMMIT_COLOR, s.legend.commit],
-                  ['✗', DELETE_COLOR, s.legend.delete],
-                ] as const
-              ).map(([sign, color, label], i) => (
-                <Text key={`lg-${i}`}>
-                  {i ? '   ' : ''}
-                  <Text color={color}>{sign}</Text> <Text color={color}>{label}</Text>
+            {mine.length > 0 && (
+              <Box flexDirection="row" gap={1}>
+                <Text dimColor>
+                  {pad}
+                  {s.touched(reads, writes)}
                 </Text>
+                <Button
+                  key={`focus-${r.id}`}
+                  label={p.focusAgent === r.agentId ? s.focusOff : s.focusOn}
+                  plain
+                  onPress={() => setPanel($, q => ({ focusAgent: q.focusAgent === r.agentId ? undefined : r.agentId }))}
+                />
+              </Box>
+            )}
+            {r.lastAnswer && (
+              <Text bold>
+                {pad}
+                {s.answer}
+              </Text>
+            )}
+            {r.lastAnswer &&
+              ('Markdown' in ui ? (
+                <ui.Markdown key={`ans-${r.id}`} text={r.lastAnswer.slice(0, 1500) + (r.lastAnswer.length > 1500 ? ' …' : '')} />
+              ) : (
+                <Text wrap="wrap">{oneLine(r.lastAnswer, 600)}</Text>
               ))}
-            </Text>
-          </Box>
-        )}
-      </Box>
-    )
-
-    // --- the timeline, by the `showTimeline` option.
-    const showTimeline = opts.showTimeline !== false && list.length > 0
-    const isAllHidden = !showUsage && !showTotals && !showAgents && opts.showTimeline === false && !showFiles
-    const timelineToggle = (
-      <Button
-        key="timeline-toggle"
-        label={`${p.isTimelineOpen ? '▾' : '▸'} ${s.timeline}`}
-        plain
-        onPress={() => setPanel($, q => ({ isTimelineOpen: !q.isTimelineOpen }))}
-      />
-    )
-
-    if (isDesktop && 'Svg' in ui) {
-      const { Svg } = ui
-      desktopDrawnAt = at
-      const W = desktopW
-      // The row's picture leaves room at its right for the Details button. An
-      // expanded agent and its details share a card framed in the agent's colour,
-      // indented by its depth; the picture inside it draws no indent of its own.
-      const runW = W - 36
-      const row = ({ run, depth }: { run: CrewRun; depth: number }) => {
-        const isOpen = p.expanded.includes(run.id)
-        const w = isOpen ? runW - FRAME_COLS * 8 - depth * 16 : runW
-        const d = isOpen ? 0 : depth
-        // The status mark beside the picture: a running agent's dot pulses in a
-        // Client, any other mark is a still picture.
-        const mark =
-          run.status === 'running' && Client ? (
-            <Box key={`mark-${run.id}`} flexShrink={0} width={3} justifyContent="center">
-              <Client key={`pulse-${run.id}`} module="./hotspot.tsx" props={{ line: [{ t: '●', c: colorOf(run), pulse: true }] } satisfies HotspotProps} />
-            </Box>
-          ) : (
-            <Box key={`mark-${run.id}`} flexShrink={0}>
-              <Svg source={runMarkSvg(run)} alt={STATUS_GLYPH[run.status]} width={MARK_W} height={ROW_H} />
-            </Box>
-          )
-        // A click anywhere on the row opens or shuts its details: a Client laid
-        // over the picture takes it on the press, so it lands while the pane
-        // redraws for the crabs' walk, and it draws the ▸ itself.
-        const hit = Client ? (
-          <Box key={`hitbox-${run.id}`} position="absolute" top={0} left={0} right={0} bottom={0}>
-            <Client
-              key={`rowhit-${run.id}`}
-              module="./hotspot.tsx"
-              width="100%"
-              height="100%"
-              props={{ id: run.id, line: [{ t: `${isOpen ? '▾' : '▸'} `, dim: true }], isRight: true, hoverBg: '#3a3a3826' } satisfies HotspotProps}
-            />
-          </Box>
-        ) : null
-        const line = (
-          <Box flexDirection="row" alignItems="flex-start" justifyContent="space-between">
-            <Box flexDirection="row" alignItems="flex-start">
-              <Svg
-                source={runSvg(w - MARK_W, run, d, byAgent, at, run.agentId !== undefined && run.agentId === viewed)}
-                alt={`${run.description || typeLabel(run)}: ${typeLabel(run)}, ${modelName(run.model)}, ${isActive(run) ? s.isRunning : s.isFinished}`}
-                width={w - MARK_W}
-                height={ROW_H}
+            {r.lastAnswer && (
+              <Button
+                key={`copy-${r.id}`}
+                label={s.copy}
+                plain
+                onPress={async () => {
+                  await $.ui.copy({ text: r.lastAnswer ?? '' })
+                  $.ui.toast(s.copied)
+                }}
               />
-              {mark}
-            </Box>
-            {hit ? <Box key={`hitroom-${run.id}`} width={3} /> : detailsButton(run)}
-            {hit}
-          </Box>
-        )
-        return isOpen ? (
-          <Box key={`row-${run.id}`} {...cardOf(run, depth)}>
-            {line}
-            {details(run)}
-          </Box>
-        ) : (
-          <Box key={`row-${run.id}`} flexDirection="column">
-            {line}
+            )}
           </Box>
         )
       }
-      const timeline = showTimeline && p.isTimelineOpen ? timelineSvg(W, list, at) : null
 
-      // Compact folds the agents' frame alone: a row of crabs each for active and finished.
-      const compact = compactSvg(W, list.filter(isActive), list.filter(r => !isActive(r)), null, at)
-      const agentsCompact = (
-        <Box key="sec-agents" {...FRAME}>
-          <Box flexDirection="row" justifyContent="flex-end" alignItems="center">
-            {toggleCompact}
-          </Box>
-          <Svg source={compact.source} alt={summary} width={W} height={compact.height} />
+      // Sits at the right of its agent's first line.
+      const detailsButton = (r: CrewRun) => {
+        const isOpen = p.expanded.includes(r.id)
+        return (
+          <Button
+            key={`d-${r.id}`}
+            label={isOpen ? '▾' : '▸'}
+            plain
+            onPress={() =>
+              setPanel($, q => ({ expanded: q.expanded.includes(r.id) ? q.expanded.filter(x => x !== r.id) : [...q.expanded, r.id].slice(-20) }))
+            }
+          />
+        )
+      }
+
+      // --- the files section.
+      // The search line narrows the tree to the paths that hold what was typed.
+      // A folder entered by a double press narrows it to that folder, labels relative.
+      const query = (p.fileQuery ?? '').trim().toLowerCase()
+      const root = p.fileRoot ?? ''
+      const everyFile = await read($, tree)
+      if (p.fileFilter === 'all' && !everyFile) $.clock.after(1, () => void syncTree($).catch(() => undefined))
+      const allViews = underFolder(fileViews(fileList, g, base, p.fileFilter, everyFile?.paths), root, fold)
+      const views = query ? allViews.filter(v => v.label.toLowerCase().includes(query)) : allViews
+      const treeAll = rowsUnder(views.map(v => ({ key: v.key, label: v.label })), root, fold)
+      const dirKeys = treeAll.filter(r => r.isDir).map(r => r.key)
+      // Folders are shut until opened; a search opens every one that holds a hit,
+      // and a file just read, changed or committed opens its folders while it
+      // shimmers, so what the agents touch shows. They shut again after, unless opened.
+      const openDirs = new Set(p.openDirs ?? [])
+      const shutAt = p.shutAt ?? {}
+      const freshDirs = new Set(
+        views.flatMap(v => (v.file && at - v.file.lastAt < FRESH_MS ? folderKeys(v.label, root, fold).filter(k => (shutAt[k] ?? -Infinity) < (v.file?.lastAt ?? 0)) : [])),
+      )
+      const shut = new Set(query ? [] : dirKeys.filter(k => !openDirs.has(k) && !freshDirs.has(k)))
+      const isAllShut = dirKeys.length > 0 && dirKeys.every(k => shut.has(k))
+      const branch = g ? `⑂ ${g.branch || 'HEAD'}${g.ahead ? ` ↑${g.ahead}` : ''}${g.behind ? ` ↓${g.behind}` : ''}` : ''
+      const focusRun = p.focusAgent ? byAgent.get(p.focusAgent) : undefined
+      const filesHeader = (
+        <Box key="files-head" flexDirection="row" alignItems="center" gap={2} marginBottom={p.isFilesCollapsed ? 0 : 1}>
+          <Button
+            key="files-toggle"
+            label={`${p.isFilesCollapsed ? '▸' : '▾'} ${s.files} · ${views.length}`}
+            plain
+            onPress={() => setPanel($, q => ({ isFilesCollapsed: !q.isFilesCollapsed }))}
+          />
+          <Text dimColor>│</Text>
+          {(['activity', 'changed', 'all'] as const).map(id => (
+            <Button
+              key={`files-filter-${id}`}
+              label={s.fileFilters[id]}
+              variant={p.fileFilter === id ? 'primary' : 'secondary'}
+              onPress={async () => {
+                await setPanel($, () => ({ fileFilter: id }))
+                // A press's own work ends with it: the list is read in a dispatch of its own.
+                if (id === 'all') $.clock.after(1, () => void syncTree($).catch(() => undefined))
+              }}
+            />
+          ))}
+          {focusRun && (
+            <Button key="focus-clear" plain onPress={() => setPanel($, () => ({ focusAgent: undefined }))}>
+              <Text color={colorOf(focusRun)}>◎ {oneLine(focusRun.description || typeLabel(focusRun), 30)}</Text> ✕
+            </Button>
+          )}
+          <Box flexGrow={1} />
+          {/* A search shows every folder with a hit open: nothing to fold then. */}
+          {!p.isFilesCollapsed && !query && dirKeys.length > 0 && (
+            <Button
+              key="files-fold-all"
+              label={isAllShut ? '⊞' : '⊟'}
+              plain
+              dimColor
+              onPress={async () => {
+                const t = await $.clock.now()
+                await setPanel($, q => {
+                  const open = (q.openDirs ?? []).filter(k => !dirKeys.includes(k))
+                  if (isAllShut) return { openDirs: [...open, ...dirKeys].slice(-500) }
+                  // Shut means shut, also for folders a fresh file holds open.
+                  const shutAt = { ...(q.shutAt ?? {}), ...Object.fromEntries(dirKeys.map(k => [k, t])) }
+                  return { openDirs: open, shutAt: Object.fromEntries(Object.entries(shutAt).slice(-200)) }
+                })
+              }}
+            />
+          )}
+          <Button key="files-refresh" label="↻" plain dimColor onPress={() => syncGit($)} />
         </Box>
       )
+
+      // Breadcrumbs under the search line, the main folder first and the branch
+      // last: a heading, so it reads larger than the rows. Once a folder is
+      // entered, the steps above it are links (the folder's own file: URL) back up.
+      const crumbs = root.split('/').filter(Boolean)
+      const folderUrl = (tree: string): string => {
+        const abs = !tree ? base : tree.startsWith('~') ? home + tree.slice(1) : /^[A-Za-z]:/.test(tree) || base === '' ? tree : `${base}/${tree}`
+        return encodeURI(`file:///${abs.replace(/^\//, '')}`)
+      }
+      const steps = [{ label: `⌂ ${base.split('/').pop() || base}`, tree: '' }, ...crumbs.map((c, i) => ({ label: c, tree: crumbs.slice(0, i + 1).join('/') }))]
+      const crumbLinks = steps.slice(0, -1).map(st => ({ ...st, href: folderUrl(st.tree) }))
+      const crumbText =
+        [...crumbLinks.map(st => `[${st.label.replace(/[[\]]/g, '')}](${st.href})`), `**${steps.at(-1)?.label ?? ''}**`].join(' › ') +
+        (branch ? `  \`${branch}\`` : '')
+      const Md = 'Markdown' in ui ? ui.Markdown : undefined
+      const crumbRow =
+        !p.isFilesCollapsed && Md ? (
+          <Box key="files-crumbs-box" marginY={1}>
+            <Md
+              key="files-crumbs"
+              text={`#### ${crumbText}`}
+              pressableLinks={crumbLinks.map(st => st.href)}
+              onLinkPress={(link: { href: string }) => {
+                const st = crumbLinks.find(x => x.href === link.href)
+                if (st) void setPanel($, () => ({ fileRoot: st.tree || undefined, openFile: undefined }))
+              }}
+            />
+          </Box>
+        ) : null
+
+      // The search line: on the cell grid where the surface has a Client, the
+      // frame's whole width and no button; elsewhere the surface's own field. Enter
+      // opens the first hit's history and diff.
+      const SearchInput = 'Input' in ui ? ui.Input : undefined
+      const searchRow =
+        !p.isFilesCollapsed && allViews.length > 0 ? (
+          Client ? (
+            <Client
+              key="search"
+              module="./searchbox.tsx"
+              width="100%"
+              props={{ value: p.fileQuery ?? '', placeholder: s.search, hits: query ? s.hits(views.length) : '', line: '#6b6b68', accent: CLAY, isFocused: p.isSearchFocused === true } satisfies SearchBoxProps}
+            />
+          ) : SearchInput ? (
+            <Box key="files-search" flexDirection="row" alignItems="center" gap={1}>
+              <Box flexGrow={1}>
+                <SearchInput
+                  key="file-q"
+                  placeholder={s.search}
+                  value={p.fileQuery ?? ''}
+                  onInput={(text: string) => void setPanel($, () => ({ fileQuery: text }))}
+                  onSubmit={(text: string) => void openFirstHit($, text)}
+                />
+              </Box>
+              {query ? <Text dimColor>{s.hits(views.length)}</Text> : null}
+              {query ? <Button key="file-q-clear" label="×" plain onPress={() => setPanel($, () => ({ fileQuery: '' }))} /> : null}
+            </Box>
+          ) : null
+        ) : null
+
+      // About 8 CSS px a column on the desktop, less the frame's border and padding.
+      const desktopW = Math.max(220, Math.min(900, ((e.props.bodyColumns || 40) - FRAME_COLS) * 8 - 8))
+
+      // A thin rule across the frame: drawn as a picture of its width on the
+      // desktop, whose lines are taller than a cell; as many dashes as cells elsewhere.
+      const RuleSvg = isDesktop && 'Svg' in ui ? ui.Svg : undefined
+      const ruleRow = (key: string) =>
+        RuleSvg ? (
+          <RuleSvg key={key} source={svg(desktopW, 9, `<line x1="0" y1="4.5" x2="${desktopW}" y2="4.5" stroke="#6b6b68" stroke-opacity=".6" stroke-width="1"/>`, false)} alt="—" width={desktopW} height={9} />
+        ) : (
+          <Text key={key} dimColor>
+            {'─'.repeat(Math.max(10, (e.props.bodyColumns || 40) - FRAME_COLS))}
+          </Text>
+        )
+
+      // One file row is one Button: a press opens its history and diff beneath it.
+      const fileTree = visibleRows(treeAll, shut)
+      const viewByKey = new Map(views.map(v => [v.key, v]))
+      const openDiff = await read($, diff)
+      // An open file's card: its history and its changes against HEAD (the text
+      // of a new file) in two tabs, with Open beside them; a file git sees no
+      // change in has its history alone, no tabs and no heading. The tab chosen stays for the
+      // next file; absent a choice, the changes.
+      const fileDetails = (v: FileView, pad: string) => {
+        const hist = [...(v.file?.history ?? [])].reverse()
+        const d = openDiff && openDiff.key === v.key ? openDiff : null
+        const Code = 'Code' in ui ? ui.Code : undefined
+        const hasChanges = Boolean(d || v.gitFile)
+        const tab = !hasChanges || p.fileTab === 'history' ? 'history' : 'changes'
+        const badge = gitBadge(v)
+        const tabs = [
+          { id: 'history' as const, label: s.history, count: hist.length ? String(hist.length) : '' },
+          ...(hasChanges ? [{ id: 'changes' as const, label: d?.format === 'source' ? s.newFile : s.changes, count: badge }] : []),
+        ]
+        return (
+          <Box key={`fd-${v.key}`} flexDirection="column" marginTop={1}>
+            {v.file?.conflict && v.file.conflict.length > 1 && (
+              <Text color="red">
+                {pad}
+                {s.conflictLine(v.file.conflict.map(a => (a === 'main' ? s.main : byAgent.get(a)?.description || a.slice(0, 8))).join(', '))}
+              </Text>
+            )}
+            <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+              {hasChanges ? (
+                <Box flexDirection="row" alignItems="center" gap={1}>
+                  {tabs.map(t => (
+                    <Button
+                      key={`ftab-${t.id}`}
+                      label={t.count ? `${t.label} ${t.count}` : t.label}
+                      variant={tab === t.id ? 'primary' : 'secondary'}
+                      onPress={() => setPanel($, () => ({ fileTab: t.id }))}
+                    />
+                  ))}
+                </Box>
+              ) : (
+                <Box />
+              )}
+              <Button key={`open-${v.key}`} label={`↗ ${s.openIt}`} variant="secondary" onPress={() => openFile($, v.file?.path ?? v.gitFile?.path ?? v.key)} />
+            </Box>
+            <Box flexDirection="column" marginTop={1}>
+              {tab === 'history' &&
+                hist.map((ev, i) => (
+                  <Text key={`h-${v.key}-${i}`} wrap="truncate-end">
+                    {pad}
+                    <Text dimColor>{fmtAgo(at - ev.at).padStart(4)} </Text>
+                    <Text color={ev.kind === 'read' ? READ_COLOR : ev.kind === 'write' ? WRITE_COLOR : COMMIT_COLOR}>{s.histKind[ev.kind]}</Text>
+                    <Text dimColor> · </Text>
+                    <Text color={agentColor(ev.agent, byAgent)}>
+                      {ev.agent === 'main' ? s.main : ev.agent === 'git' ? 'git' : byAgent.get(ev.agent)?.description || ev.agent.slice(0, 8)}
+                    </Text>
+                  </Text>
+                ))}
+              {tab === 'history' && hist.length === 0 && <Text dimColor>{s.noHistory}</Text>}
+              {tab === 'changes' && d && Code && <Code key={`code-${v.key}`} source={d.text} format={d.format} path={v.label} wrap="truncate-end" />}
+              {tab === 'changes' && d && !Code && <Text>{d.text.slice(0, 2000)}</Text>}
+              {tab === 'changes' && !d && (
+                <Text dimColor>
+                  {pad}
+                  {s.noDiff}
+                </Text>
+              )}
+            </Box>
+          </Box>
+        )
+      }
+      // One row a file, as filetree's: a press on it opens its card (history and
+      // diff), a double press the file itself; a folder shuts and opens on a press.
+      // Where the surface has a Client the rows are drawn on its cell grid, a fresh
+      // name shimmering while it still takes presses; elsewhere each row is a Button.
+      // A shut folder sums up the files inside it; an open one leaves that to its rows.
+      const beneath = filesBeneath(treeAll)
+      const folderSigns = (key: string): Seg[] =>
+        shut.has(key) ? folderSummary((beneath.get(key) ?? []).flatMap(k => viewByKey.get(k) ?? []), byAgent, focusRun ? p.focusAgent : undefined) : []
+      const fileRowsOf = (rows: TreeRow[], base: number): FileRowSpec[] =>
+        rows.flatMap((r): FileRowSpec[] => {
+          const indent = '  '.repeat(Math.max(0, r.depth - base))
+          if (r.isDir) return [{ id: r.key, isOpen: !shut.has(r.key), left: [{ t: `${indent}${shut.has(r.key) ? '▸' : '▾'} ${r.name}/`, dim: true }], right: folderSigns(r.key) }]
+          const v = viewByKey.get(r.key)
+          if (!v) return []
+          const color = fileColor(v)
+          const badge = gitBadge(v)
+          const isFresh = Boolean(v.file && at - v.file.lastAt < FRESH_MS)
+          const isOpen = p.openFile === v.key
+          // Only while the focused agent is listed, and so its ✕ in the header with it.
+          const isDim = Boolean(focusRun && p.focusAgent && !(v.file?.agents ?? []).includes(p.focusAgent))
+          const tone = isFresh && !isDim ? (isDeleted(v) ? 'delete' : (v.file?.lastKind ?? 'read')) : undefined
+          const right: Seg[] = (v.file?.agents.slice(0, 6) ?? []).map(a => ({ t: '●', c: agentColor(a, byAgent), dim: isDim }))
+          if (badge) right.push({ t: ` ${badge}`, c: badgeColor(v), dim: isDim })
+          if ((v.file?.conflict?.length ?? 0) > 1) right.push({ t: ' ⚠', c: '#D0453F' })
+          right.push({ t: ` ${isOpen ? '▾' : '▸'} `, dim: true })
+          return [
+            {
+              id: r.key,
+              left: [
+                { t: indent },
+                { t: `${fileGlyph(v)} `, c: color, dim: isDim, sh: tone },
+                { t: r.name, b: isFresh || isOpen, c: isOpen ? color : undefined, dim: isDim || isUntouched(v), sh: tone },
+              ],
+              right,
+            },
+          ]
+        })
+      const rowsClient = (key: string, rows: TreeRow[], base = 0) =>
+        Client && rows.length > 0 ? (
+          <Client
+            key={key}
+            module="./filerows.tsx"
+            width="100%"
+            props={{ rows: fileRowsOf(rows, base).map(r => ({ ...r, left: r.left.map(plainSeg), right: r.right.map(plainSeg) })), tones: SHIMMER, hoverBg: '#3a3a3826' } satisfies FileRowsProps}
+          />
+        ) : null
+
+      // Without a Client: a Button a row, the same presses.
+      const buttonRow = (r: TreeRow) => {
+        if (r.isDir)
+          return (
+            <Box key={`f-${r.key}`} flexDirection="row" justifyContent="space-between" gap={1} marginLeft={r.depth * 2}>
+              <Button key={`dir-${r.key}`} plain dimColor onPress={() => pressRow($, r.key, !shut.has(r.key))}>
+                {shut.has(r.key) ? '▸' : '▾'} {r.name}/
+              </Button>
+              <Text>
+                {folderSigns(r.key).map((sg, i) => (
+                  <Text key={`ds-${r.key}-${i}`} color={sg.c} dimColor={sg.dim}>
+                    {sg.t}
+                  </Text>
+                ))}
+              </Text>
+            </Box>
+          )
+        const v = viewByKey.get(r.key)
+        if (!v) return null
+        const color = fileColor(v)
+        const badge = gitBadge(v)
+        const isOpen = p.openFile === v.key
+        return (
+          <Box key={`f-${r.key}`} flexDirection="row" justifyContent="space-between" gap={1} marginLeft={isOpen ? 0 : r.depth * 2}>
+            <Button key={`file-${r.key}`} plain onPress={() => pressRow($, v.key)}>
+              <Text color={color}>{`${fileGlyph(v)} `}</Text>
+              <Text bold={isOpen}>{r.name}</Text>
+            </Button>
+            <Text>
+              {(v.file?.agents.slice(0, 6) ?? []).map(a => (
+                <Text key={`fa-${r.key}-${a}`} color={agentColor(a, byAgent)}>
+                  ●
+                </Text>
+              ))}
+              {badge ? <Text color={badgeColor(v)}> {badge}</Text> : null}
+              {(v.file?.conflict?.length ?? 0) > 1 ? <Text color="red"> ⚠</Text> : null}
+            </Text>
+          </Box>
+        )
+      }
+
+      // The open file and its card sit between the rows above and below it.
+      const shownRows = fileTree.slice(0, MAX_FILE_ROWS)
+      const openIdx = shownRows.findIndex(r => !r.isDir && r.key === p.openFile)
+      const openRow = openIdx >= 0 ? shownRows[openIdx] : undefined
+      const openView = openRow ? viewByKey.get(openRow.key) : undefined
+      const above = openIdx >= 0 ? shownRows.slice(0, openIdx) : shownRows
+      const below = openIdx >= 0 ? shownRows.slice(openIdx + 1) : []
+      const rowsOf = (key: string, rows: TreeRow[], base = 0) => (Client ? rowsClient(key, rows, base) : rows.map(buttonRow))
+      const openCard =
+        openRow && openView ? (
+          // The card spans the tree's width; only its row keeps the tree's indent, one
+          // step less for the card's border and padding, so the name stays in line.
+          <Box key="f-open" {...card((openView.file?.conflict?.length ?? 0) > 1 ? '#D0453F' : fileColor(openView), 0)}>
+            {rowsOf('rows-o', [openRow], Math.min(1, openRow.depth))}
+            {fileDetails(openView, '')}
+          </Box>
+        ) : null
+      const filesBody = (
+        <Box key="files-body" flexDirection="column">
+          {!p.isFilesCollapsed && views.length === 0 && <Text dimColor>{query ? s.noHits : s.noFiles}</Text>}
+          {!p.isFilesCollapsed && rowsOf('rows-a', above)}
+          {!p.isFilesCollapsed && openCard}
+          {!p.isFilesCollapsed && rowsOf('rows-b', below)}
+          {!p.isFilesCollapsed && fileTree.length > MAX_FILE_ROWS && <Text dimColor>{s.more(fileTree.length - MAX_FILE_ROWS)}</Text>}
+          {!p.isFilesCollapsed && views.length > 0 && (
+            // Set off from the tree by a rule; each sign in the colour it marks.
+            <Box key="files-legend" flexDirection="column" marginTop={1}>
+              {ruleRow('files-rule')}
+              <Text>
+                {(
+                  [
+                    ['◉', READ_COLOR, s.legend.read],
+                    ['✎', WRITE_COLOR, s.legend.write],
+                    ['✓', COMMIT_COLOR, s.legend.commit],
+                    ['✗', DELETE_COLOR, s.legend.delete],
+                  ] as const
+                ).map(([sign, color, label], i) => (
+                  <Text key={`lg-${i}`}>
+                    {i ? '   ' : ''}
+                    <Text color={color}>{sign}</Text> <Text color={color}>{label}</Text>
+                  </Text>
+                ))}
+              </Text>
+            </Box>
+          )}
+        </Box>
+      )
+
+      // --- the timeline, by the `showTimeline` option.
+      const showTimeline = opts.showTimeline !== false && list.length > 0
+      const isAllHidden = !showUsage && !showTotals && !showAgents && opts.showTimeline === false && !showFiles
+      const timelineToggle = (
+        <Button
+          key="timeline-toggle"
+          label={`${p.isTimelineOpen ? '▾' : '▸'} ${s.timeline}`}
+          plain
+          onPress={() => setPanel($, q => ({ isTimelineOpen: !q.isTimelineOpen }))}
+        />
+      )
+
+      if (isDesktop && 'Svg' in ui) {
+        const { Svg } = ui
+        desktopDrawnAt = at
+        const W = desktopW
+        // The row's picture leaves room at its right for the Details button. An
+        // expanded agent and its details share a card framed in the agent's colour,
+        // indented by its depth; the picture inside it draws no indent of its own.
+        const runW = W - 36
+        const row = ({ run, depth }: { run: CrewRun; depth: number }) => {
+          const isOpen = p.expanded.includes(run.id)
+          const w = isOpen ? runW - FRAME_COLS * 8 - depth * 16 : runW
+          const d = isOpen ? 0 : depth
+          // The status mark beside the picture: a running agent's dot pulses in a
+          // Client, any other mark is a still picture.
+          const mark =
+            run.status === 'running' && Client ? (
+              <Box key={`mark-${run.id}`} flexShrink={0} width={3} justifyContent="center">
+                <Client key={`pulse-${run.id}`} module="./hotspot.tsx" props={{ line: [{ t: '●', c: colorOf(run), pulse: true }] } satisfies HotspotProps} />
+              </Box>
+            ) : (
+              <Box key={`mark-${run.id}`} flexShrink={0}>
+                <Svg source={runMarkSvg(run)} alt={STATUS_GLYPH[run.status]} width={MARK_W} height={ROW_H} />
+              </Box>
+            )
+          // A click anywhere on the row opens or shuts its details: a Client laid
+          // over the picture takes it on the press, so it lands while the pane
+          // redraws for the crabs' walk, and it draws the ▸ itself.
+          const hit = Client ? (
+            <Box key={`hitbox-${run.id}`} position="absolute" top={0} left={0} right={0} bottom={0}>
+              <Client
+                key={`rowhit-${run.id}`}
+                module="./hotspot.tsx"
+                width="100%"
+                height="100%"
+                props={{ id: run.id, line: [{ t: `${isOpen ? '▾' : '▸'} `, dim: true }], isRight: true, hoverBg: '#3a3a3826' } satisfies HotspotProps}
+              />
+            </Box>
+          ) : null
+          const line = (
+            <Box flexDirection="row" alignItems="flex-start" justifyContent="space-between">
+              <Box flexDirection="row" alignItems="flex-start">
+                <Svg
+                  source={runSvg(w - MARK_W, run, d, byAgent, at, run.agentId !== undefined && run.agentId === viewed)}
+                  alt={`${run.description || typeLabel(run)}: ${typeLabel(run)}, ${modelName(run.model)}, ${isActive(run) ? s.isRunning : s.isFinished}`}
+                  width={w - MARK_W}
+                  height={ROW_H}
+                />
+                {mark}
+              </Box>
+              {hit ? <Box key={`hitroom-${run.id}`} width={3} /> : detailsButton(run)}
+              {hit}
+            </Box>
+          )
+          return isOpen ? (
+            <Box key={`row-${run.id}`} {...cardOf(run, depth)}>
+              {line}
+              {details(run)}
+            </Box>
+          ) : (
+            <Box key={`row-${run.id}`} flexDirection="column">
+              {line}
+            </Box>
+          )
+        }
+        const timeline = showTimeline && p.isTimelineOpen ? timelineSvg(W, list, at) : null
+
+        // Compact folds the agents' frame alone: a row of crabs each for active and finished.
+        const compact = compactSvg(W, list.filter(isActive), list.filter(r => !isActive(r)), null, at)
+        const agentsCompact = (
+          <Box key="sec-agents" {...FRAME}>
+            <Box flexDirection="row" justifyContent="flex-end" alignItems="center">
+              {toggleCompact}
+            </Box>
+            <Svg source={compact.source} alt={summary} width={W} height={compact.height} />
+          </Box>
+        )
+        return (
+          <Box flexDirection="column" gap={1}>
+            {settingsRow}
+            {showUsage && meters.length > 0 && (
+              <Box key="sec-usage" {...FRAME}>
+                <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+                  <Text bold dimColor>
+                    {s.usage}
+                  </Text>
+                  {compactButton}
+                </Box>
+                <Svg source={usageSvg(W, meters, at)} alt={meters.map(m => `${m.percent}% ${m.label}`).join(', ')} width={W} height={USAGE_H} />
+              </Box>
+            )}
+            {showTotals && (
+              <Box key="sec-totals" {...FRAME}>
+                <Box marginBottom={1}>
+                  <Text bold dimColor>
+                    {s.totalsTitle}
+                  </Text>
+                </Box>
+                <Svg source={costSvg(W, main, subs, list.length)} alt={`${s.main} ≈${fmtCost(main.cost)}, ${s.subagents(list.length)} ≈${fmtCost(subs.cost)}`} width={W} height={COST_H} />
+              </Box>
+            )}
+            {showAgents &&
+              (p.isCompact ? (
+                agentsCompact
+              ) : (
+                <Box key="sec-agents" {...FRAME}>
+                  <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+                    {tabStrip}
+                    {toggleCompact}
+                  </Box>
+                  {shown.length === 0 && <Text dimColor>{p.tab === 'active' ? s.noActive : s.noDone}</Text>}
+                  {shown.map(row)}
+                  {clearDone}
+                </Box>
+              ))}
+            {showTimeline && (
+              <Box key="sec-timeline" {...FRAME}>
+                {timelineToggle}
+                {timeline && <Svg source={timeline.source} alt={s.timeline} width={W} height={timeline.height} />}
+              </Box>
+            )}
+            {showFiles && (
+              <Box key="sec-files" {...FRAME}>
+                {filesHeader}
+                {searchRow}
+                {crumbRow}
+                {filesBody}
+              </Box>
+            )}
+            {isAllHidden && <Text dimColor>{s.allHidden}</Text>}
+          </Box>
+        )
+      }
+
+      // Terminal and the other surfaces: the same content in text rows.
+      const cols = Math.max(24, (e.props.bodyColumns || 40) - FRAME_COLS)
+      const costBarW = Math.max(6, cols - 2)
+      const barW = Math.max(6, Math.min(20, cols - 34))
+      const bar = (b: AgentBar) => cellBar(b.share, barW)
+      const row = ({ run, depth }: { run: CrewRun; depth: number }) => {
+        const color = colorOf(run)
+        const ctx = ctxOf(run)
+        const agentBar = barOf(run, at)
+        const isOpen = p.expanded.includes(run.id)
+        // Inside its card an expanded agent takes its indent from the card.
+        const pad = isOpen ? '' : '  '.repeat(depth)
+        const isViewed = run.agentId !== undefined && run.agentId === viewed
+        return (
+          <Box key={`row-${run.id}`} {...(isOpen ? cardOf(run, depth) : { flexDirection: 'column' as const })} marginBottom={1}>
+            <Box flexDirection="row" justifyContent="space-between">
+              <Box flexDirection="row" gap={1} flexShrink={1}>
+                <Text color={color}>
+                  {pad}
+                  {depth && !isOpen ? '└' : ''}
+                  {isViewed ? '▶' : '▣'}
+                </Text>
+                <Text bold wrap="truncate-end">
+                  {run.description || typeLabel(run)}
+                </Text>
+                <Text color={run.status === 'failed' ? 'red' : run.status === 'done' ? 'green' : color}>{STATUS_GLYPH[run.status]}</Text>
+              </Box>
+              {detailsButton(run)}
+            </Box>
+            <Text dimColor wrap="truncate-end">
+              {pad}
+              {'  '}
+              {typeLabel(run)} · {metaOf(run, byAgent).join(' · ')}
+            </Text>
+            {run.lastAction && (
+              <Text dimColor wrap="truncate-end">
+                {pad}
+                {'  '}› {run.lastAction}
+              </Text>
+            )}
+            <Text wrap="truncate-end">
+              {pad}
+              {'  '}
+              <Text color={agentBar.color}>{bar(agentBar)}</Text>
+              {agentBar.label ? <Text> {agentBar.label}</Text> : null}
+              <Text dimColor>
+                {' '}
+                ctx {ctx}% · {fmtTokens(run.contextTokens)} ≈{fmtCost(run.costUsd)} {fmtTime(elapsed(run, at))}
+              </Text>
+            </Text>
+            {p.expanded.includes(run.id) && details(run)}
+          </Box>
+        )
+      }
+
+      // The timeline in text: one bar a run on a shared axis.
+      const timelineRows = () => {
+        const items = timelineRuns(list)
+        const labelW = Math.min(18, Math.floor(cols * 0.35))
+        const w = Math.max(8, cols - labelW - 2)
+        // Pauses fold into a 3-cell break `┊`, as on the desktop.
+        const axis = timelineAxis(items, at, w, 3)
+        const breakCols = axis.breaks.map(b => Math.round(b.x) + 1)
+        const lineOf = (from: number, to: number, color: string) => {
+          const cells = [...Array(w)].map((_, c) => (breakCols.includes(c) ? '┊' : c >= from && c < to ? '━' : '·'))
+          return cells.map((ch, c) => (
+            <Text key={`c${c}`} color={ch === '━' ? color : undefined} dimColor={ch !== '━'}>
+              {ch}
+            </Text>
+          ))
+        }
+        return items.map(r => {
+          const from = Math.floor(axis.xOf(r.startedAt))
+          const to = Math.max(from + 1, Math.round(axis.xOf(r.endedAt ?? at)))
+          const name = oneLine(r.description || typeLabel(r), labelW).padEnd(labelW)
+          return (
+            <Text key={`tl-${r.id}`} wrap="truncate-end">
+              <Text dimColor>{name} </Text>
+              {lineOf(from, to, r.status === 'failed' ? 'red' : colorOf(r))}
+            </Text>
+          )
+        })
+      }
+
+      const meterRow = (m: Meter) => {
+        const w = Math.max(6, Math.min(24, cols - 30))
+        const filled = Math.round((w * m.percent) / 100)
+        const reset = m.resetsAt ? resetIn(m.resetsAt, at) : ''
+        return (
+          <Text key={`m-${m.key}`} wrap="truncate-end">
+            <Text color={meterColor(m.percent)}>{'█'.repeat(filled)}</Text>
+            <Text dimColor>{'░'.repeat(Math.max(0, w - filled))}</Text> <Text bold>{`${m.percent}%`.padStart(4)}</Text> {m.label}
+            <Text dimColor>
+              {m.detail ? ` · ${m.detail}` : ''}
+              {reset ? ` · ${reset}` : ''}
+            </Text>
+          </Text>
+        )
+      }
+
       return (
-        <Box flexDirection="column" gap={1}>
+        <Box flexDirection="column">
           {settingsRow}
           {showUsage && meters.length > 0 && (
             <Box key="sec-usage" {...FRAME}>
-              <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+              <Box flexDirection="row" justifyContent="space-between">
                 <Text bold dimColor>
                   {s.usage}
                 </Text>
                 {compactButton}
               </Box>
-              <Svg source={usageSvg(W, meters, at)} alt={meters.map(m => `${m.percent}% ${m.label}`).join(', ')} width={W} height={USAGE_H} />
+              {meters.map(meterRow)}
             </Box>
           )}
           {showTotals && (
             <Box key="sec-totals" {...FRAME}>
-              <Box marginBottom={1}>
-                <Text bold dimColor>
-                  {s.totalsTitle}
+              <Text bold dimColor>
+                {s.totalsTitle}
+              </Text>
+              {(
+                [
+                  ['cost-main', s.main, main, CLAY],
+                  ['cost-subs', s.subagents(list.length), subs, SUB_COLOR],
+                ] as const
+              ).map(([key, label, part, color]) => (
+                <Box key={key} flexDirection="row" justifyContent="space-between">
+                  <Text wrap="truncate-end">
+                    <Text color={color}>● </Text>
+                    {label}
+                  </Text>
+                  <Text>
+                    <Text dimColor>
+                      {fmtTokens(part.tokens)} {s.fresh} · {fmtTokens(part.cache)} {s.cached}{'  '}
+                    </Text>
+                    <Text bold>≈{fmtCost(part.cost)}</Text>
+                  </Text>
+                </Box>
+              ))}
+              <Text wrap="truncate-end">
+                <Text color={CLAY}>{'█'.repeat(Math.round(costBarW * mainShare))}</Text>
+                <Text color={SUB_COLOR} dimColor={main.cost + subs.cost === 0}>
+                  {(main.cost + subs.cost === 0 ? '░' : '█').repeat(costBarW - Math.round(costBarW * mainShare))}
+                </Text>
+              </Text>
+              <Box flexDirection="row" justifyContent="space-between">
+                <Text dimColor>{s.total}</Text>
+                <Text>
+                  <Text dimColor>
+                    {fmtTokens(main.tokens + subs.tokens)} {s.fresh} · {fmtTokens(main.cache + subs.cache)} {s.cached}{'  '}
+                  </Text>
+                  <Text bold>≈{fmtCost(main.cost + subs.cost)}</Text>
                 </Text>
               </Box>
-              <Svg source={costSvg(W, main, subs, list.length)} alt={`${s.main} ≈${fmtCost(main.cost)}, ${s.subagents(list.length)} ≈${fmtCost(subs.cost)}`} width={W} height={COST_H} />
             </Box>
           )}
-          {showAgents &&
-            (p.isCompact ? (
-              agentsCompact
-            ) : (
-              <Box key="sec-agents" {...FRAME}>
-                <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-                  {tabStrip}
-                  {toggleCompact}
-                </Box>
-                {shown.length === 0 && <Text dimColor>{p.tab === 'active' ? s.noActive : s.noDone}</Text>}
-                {shown.map(row)}
-                {clearDone}
+          {showAgents && (
+            <Box key="sec-agents" {...FRAME}>
+              <Box flexDirection="row" justifyContent="flex-end">
+                {toggleCompact}
               </Box>
-            ))}
+              {p.isCompact ? (
+                <Box flexDirection="column">
+                  {(
+                    [
+                      ['c-active', s.active, list.filter(isActive), CLAY],
+                      ['c-done', s.finished, list.filter(r => !isActive(r)), COMMIT_COLOR],
+                    ] as const
+                  ).map(([key, label, runsOf, color]) => (
+                    <Text key={key} wrap="truncate-end">
+                      <Text color={color}>● </Text>
+                      <Text bold>{label.padEnd(8)}</Text>
+                      <Text dimColor>{String(runsOf.length).padStart(3)} </Text>
+                      {runsOf.length === 0 ? (
+                        <Text dimColor>—</Text>
+                      ) : (
+                        runsOf.map(run => (
+                          <Text
+                            key={`${key}-${run.id}`}
+                            color={run.status === 'failed' ? 'red' : run.status === 'done' ? 'green' : colorOf(run)}
+                            dimColor={!isActive(run) && run.status !== 'failed'}
+                          >
+                            {STATUS_GLYPH[run.status]}{' '}
+                          </Text>
+                        ))
+                      )}
+                    </Text>
+                  ))}
+                </Box>
+              ) : (
+                <Box flexDirection="column">
+                  {tabStrip}
+                  {shown.length === 0 && <Text dimColor>{p.tab === 'active' ? s.noActive : s.noDone}</Text>}
+                  {shown.map(row)}
+                  {clearDone}
+                </Box>
+              )}
+            </Box>
+          )}
           {showTimeline && (
             <Box key="sec-timeline" {...FRAME}>
               {timelineToggle}
-              {timeline && <Svg source={timeline.source} alt={s.timeline} width={W} height={timeline.height} />}
+              {p.isTimelineOpen && timelineRows()}
             </Box>
           )}
           {showFiles && (
@@ -2999,228 +3521,5 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-
-    // Terminal and the other surfaces: the same content in text rows.
-    const cols = Math.max(24, (e.props.bodyColumns || 40) - FRAME_COLS)
-    const costBarW = Math.max(6, cols - 2)
-    const barW = Math.max(6, Math.min(20, cols - 34))
-    // In eighths of a cell, so a slow estimate visibly grows between redraws.
-    const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
-    const bar = (b: AgentBar) => {
-      const eighths = Math.round(barW * 8 * Math.min(1, b.share))
-      const full = Math.floor(eighths / 8)
-      const part = EIGHTHS[eighths % 8] ?? ''
-      return '█'.repeat(full) + part + '░'.repeat(Math.max(0, barW - full - (part ? 1 : 0)))
-    }
-    const row = ({ run, depth }: { run: CrewRun; depth: number }) => {
-      const color = colorOf(run)
-      const ctx = ctxOf(run)
-      const agentBar = barOf(run, at)
-      const isOpen = p.expanded.includes(run.id)
-      // Inside its card an expanded agent takes its indent from the card.
-      const pad = isOpen ? '' : '  '.repeat(depth)
-      const isViewed = run.agentId !== undefined && run.agentId === viewed
-      return (
-        <Box key={`row-${run.id}`} {...(isOpen ? cardOf(run, depth) : { flexDirection: 'column' as const })} marginBottom={1}>
-          <Box flexDirection="row" justifyContent="space-between">
-            <Box flexDirection="row" gap={1} flexShrink={1}>
-              <Text color={color}>
-                {pad}
-                {depth && !isOpen ? '└' : ''}
-                {isViewed ? '▶' : '▣'}
-              </Text>
-              <Text bold wrap="truncate-end">
-                {run.description || typeLabel(run)}
-              </Text>
-              <Text color={run.status === 'failed' ? 'red' : run.status === 'done' ? 'green' : color}>{STATUS_GLYPH[run.status]}</Text>
-            </Box>
-            {detailsButton(run)}
-          </Box>
-          <Text dimColor wrap="truncate-end">
-            {pad}
-            {'  '}
-            {typeLabel(run)} · {metaOf(run, byAgent).join(' · ')}
-          </Text>
-          {run.lastAction && (
-            <Text dimColor wrap="truncate-end">
-              {pad}
-              {'  '}› {run.lastAction}
-            </Text>
-          )}
-          <Text wrap="truncate-end">
-            {pad}
-            {'  '}
-            <Text color={agentBar.color}>{bar(agentBar)}</Text>
-            {agentBar.label ? <Text> {agentBar.label}</Text> : null}
-            <Text dimColor>
-              {' '}
-              ctx {ctx}% · {fmtTokens(run.contextTokens)} ≈{fmtCost(run.costUsd)} {fmtTime(elapsed(run, at))}
-            </Text>
-          </Text>
-          {p.expanded.includes(run.id) && details(run)}
-        </Box>
-      )
-    }
-
-    // The timeline in text: one bar a run on a shared axis.
-    const timelineRows = () => {
-      const items = timelineRuns(list)
-      const labelW = Math.min(18, Math.floor(cols * 0.35))
-      const w = Math.max(8, cols - labelW - 2)
-      // Pauses fold into a 3-cell break `┊`, as on the desktop.
-      const axis = timelineAxis(items, at, w, 3)
-      const breakCols = axis.breaks.map(b => Math.round(b.x) + 1)
-      const lineOf = (from: number, to: number, color: string) => {
-        const cells = [...Array(w)].map((_, c) => (breakCols.includes(c) ? '┊' : c >= from && c < to ? '━' : '·'))
-        return cells.map((ch, c) => (
-          <Text key={`c${c}`} color={ch === '━' ? color : undefined} dimColor={ch !== '━'}>
-            {ch}
-          </Text>
-        ))
-      }
-      return items.map(r => {
-        const from = Math.floor(axis.xOf(r.startedAt))
-        const to = Math.max(from + 1, Math.round(axis.xOf(r.endedAt ?? at)))
-        const name = oneLine(r.description || typeLabel(r), labelW).padEnd(labelW)
-        return (
-          <Text key={`tl-${r.id}`} wrap="truncate-end">
-            <Text dimColor>{name} </Text>
-            {lineOf(from, to, r.status === 'failed' ? 'red' : colorOf(r))}
-          </Text>
-        )
-      })
-    }
-
-    const meterRow = (m: Meter) => {
-      const w = Math.max(6, Math.min(24, cols - 30))
-      const filled = Math.round((w * m.percent) / 100)
-      const reset = m.resetsAt ? resetIn(m.resetsAt, at) : ''
-      return (
-        <Text key={`m-${m.key}`} wrap="truncate-end">
-          <Text color={meterColor(m.percent)}>{'█'.repeat(filled)}</Text>
-          <Text dimColor>{'░'.repeat(Math.max(0, w - filled))}</Text> <Text bold>{`${m.percent}%`.padStart(4)}</Text> {m.label}
-          <Text dimColor>
-            {m.detail ? ` · ${m.detail}` : ''}
-            {reset ? ` · ${reset}` : ''}
-          </Text>
-        </Text>
-      )
-    }
-
-    return (
-      <Box flexDirection="column">
-        {settingsRow}
-        {showUsage && meters.length > 0 && (
-          <Box key="sec-usage" {...FRAME}>
-            <Box flexDirection="row" justifyContent="space-between">
-              <Text bold dimColor>
-                {s.usage}
-              </Text>
-              {compactButton}
-            </Box>
-            {meters.map(meterRow)}
-          </Box>
-        )}
-        {showTotals && (
-          <Box key="sec-totals" {...FRAME}>
-            <Text bold dimColor>
-              {s.totalsTitle}
-            </Text>
-            {(
-              [
-                ['cost-main', s.main, main, CLAY],
-                ['cost-subs', s.subagents(list.length), subs, SUB_COLOR],
-              ] as const
-            ).map(([key, label, part, color]) => (
-              <Box key={key} flexDirection="row" justifyContent="space-between">
-                <Text wrap="truncate-end">
-                  <Text color={color}>● </Text>
-                  {label}
-                </Text>
-                <Text>
-                  <Text dimColor>
-                    {fmtTokens(part.tokens)} {s.fresh} · {fmtTokens(part.cache)} {s.cached}{'  '}
-                  </Text>
-                  <Text bold>≈{fmtCost(part.cost)}</Text>
-                </Text>
-              </Box>
-            ))}
-            <Text wrap="truncate-end">
-              <Text color={CLAY}>{'█'.repeat(Math.round(costBarW * mainShare))}</Text>
-              <Text color={SUB_COLOR} dimColor={main.cost + subs.cost === 0}>
-                {(main.cost + subs.cost === 0 ? '░' : '█').repeat(costBarW - Math.round(costBarW * mainShare))}
-              </Text>
-            </Text>
-            <Box flexDirection="row" justifyContent="space-between">
-              <Text dimColor>{s.total}</Text>
-              <Text>
-                <Text dimColor>
-                  {fmtTokens(main.tokens + subs.tokens)} {s.fresh} · {fmtTokens(main.cache + subs.cache)} {s.cached}{'  '}
-                </Text>
-                <Text bold>≈{fmtCost(main.cost + subs.cost)}</Text>
-              </Text>
-            </Box>
-          </Box>
-        )}
-        {showAgents && (
-          <Box key="sec-agents" {...FRAME}>
-            <Box flexDirection="row" justifyContent="flex-end">
-              {toggleCompact}
-            </Box>
-            {p.isCompact ? (
-              <Box flexDirection="column">
-                {(
-                  [
-                    ['c-active', s.active, list.filter(isActive), CLAY],
-                    ['c-done', s.finished, list.filter(r => !isActive(r)), COMMIT_COLOR],
-                  ] as const
-                ).map(([key, label, runsOf, color]) => (
-                  <Text key={key} wrap="truncate-end">
-                    <Text color={color}>● </Text>
-                    <Text bold>{label.padEnd(8)}</Text>
-                    <Text dimColor>{String(runsOf.length).padStart(3)} </Text>
-                    {runsOf.length === 0 ? (
-                      <Text dimColor>—</Text>
-                    ) : (
-                      runsOf.map(run => (
-                        <Text
-                          key={`${key}-${run.id}`}
-                          color={run.status === 'failed' ? 'red' : run.status === 'done' ? 'green' : colorOf(run)}
-                          dimColor={!isActive(run) && run.status !== 'failed'}
-                        >
-                          {STATUS_GLYPH[run.status]}{' '}
-                        </Text>
-                      ))
-                    )}
-                  </Text>
-                ))}
-              </Box>
-            ) : (
-              <Box flexDirection="column">
-                {tabStrip}
-                {shown.length === 0 && <Text dimColor>{p.tab === 'active' ? s.noActive : s.noDone}</Text>}
-                {shown.map(row)}
-                {clearDone}
-              </Box>
-            )}
-          </Box>
-        )}
-        {showTimeline && (
-          <Box key="sec-timeline" {...FRAME}>
-            {timelineToggle}
-            {p.isTimelineOpen && timelineRows()}
-          </Box>
-        )}
-        {showFiles && (
-          <Box key="sec-files" {...FRAME}>
-            {filesHeader}
-            {searchRow}
-            {crumbRow}
-            {filesBody}
-          </Box>
-        )}
-        {isAllHidden && <Text dimColor>{s.allHidden}</Text>}
-      </Box>
-    )
   })
 }

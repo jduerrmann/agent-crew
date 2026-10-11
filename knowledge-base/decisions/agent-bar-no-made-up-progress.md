@@ -26,4 +26,4 @@ updated: 2026-10-11
 - A tally of steps with no bar: rejected, since a bar reads faster.
 - A thin second bar for context: the user chose text, because with 1M windows it is nearly always small.
 
-**Consequences:** the prompt band's progress line ([prompt-band](../plans/active/prompt-band.md)) should take its bars from `barOf`. If savvy-progress renames its tool, reported steps go quiet and the band shows instead.
+**Consequences:** the prompt band's progress line ([prompt-band](prompt-band.md)) should take its bars from `barOf`. If savvy-progress renames its tool, reported steps go quiet and the band shows instead.

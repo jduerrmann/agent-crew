@@ -16,6 +16,8 @@ export type HotspotProps = {
   isRight?: boolean
   /** The region's background while the pointer is over it. */
   hoverBg?: string
+  /** Its background otherwise: set, the region reads as a button. */
+  bg?: string
 }
 type Local = { hover: boolean; phase: number; ref: { stop?: () => void } }
 
@@ -83,9 +85,9 @@ const Hotspot: ClientModule<HotspotProps, Local> = (props, surface) => {
       height="100%"
       justifyContent={props.isRight ? 'flex-end' : 'flex-start'}
       alignItems="flex-start"
-      backgroundColor={state.hover && props.hoverBg ? props.hoverBg : undefined}
+      backgroundColor={state.hover && props.hoverBg ? props.hoverBg : props.bg}
     >
-      <Text>{(props.line ?? []).map((s, i) => draw(s, `s${i}`))}</Text>
+      <Text wrap="truncate-end">{(props.line ?? []).map((s, i) => draw(s, `s${i}`))}</Text>
     </Box>
   )
 }

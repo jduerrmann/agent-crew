@@ -26,5 +26,5 @@ updated: 2026-10-11
 
 **Consequences:**
 - The bar is not a measurement. A short agent ends at 20 to 30 %, and a long one creeps near 90 % for a long time.
-- The prompt band's progress line ([prompt-band](../plans/active/prompt-band.md)) should take its bars from `barOf`.
+- The prompt band's progress line ([prompt-band](prompt-band.md)) takes its bars from `barOf`.
 - If savvy-progress renames its tool, reported steps go quiet and the estimate shows instead.

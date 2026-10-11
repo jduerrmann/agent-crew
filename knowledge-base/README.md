@@ -45,6 +45,7 @@ Rules:
 - [plugin-dirs-at-session-start](limits/plugin-dirs-at-session-start.md): `CLAUDE_CODE_PLUGIN_DIRS` is read at session start, hot reload needs the user's OK; id `agent-crew@inline`
 - [marketplace-install-is-snapshot](limits/marketplace-install-is-snapshot.md): a marketplace install is a cached copy, even from a local folder; it updates only on a new version
 - [folder-copy-no-self-update](limits/folder-copy-no-self-update.md): only cache installs can update themselves; a folder copy is told to `git pull`
+- [pane-lost-after-reloads](limits/pane-lost-after-reloads.md): after many hot reloads a pane can stay "not drawn" though the mod loads; restart; hooks must be function literals
 
 ### Windows, git, shell
 - [windows-no-lang](limits/windows-no-lang.md): Windows sets no LANG; language from option, Claude Code setting, locale vars, Intl
@@ -60,6 +61,7 @@ Rules:
 - [own-mod-one-pane](decisions/own-mod-one-pane.md): a mod of our own, not savvy; one pane for agents, timeline, files, usage; one hooks module
 - [configurable-sections](decisions/configurable-sections.md): framed sections, each with a switch; new features come with an option
 - [svg-desktop-text-terminal](decisions/svg-desktop-text-terminal.md): SVG with CSS animation on desktop, the same content as text in the terminal; timeline folds pauses
+- [prompt-band](decisions/prompt-band.md): band above the prompt: crabs and counts, bars, usage rings, each an option; click opens the pane; stacks over others (user)
 - [settings-tab](decisions/settings-tab.md): `/crew-settings` tab and ⚙ button, written through `$.config.set` like `/config`
 - [cost-is-an-estimate](decisions/cost-is-an-estimate.md): cost marked `≈` from `PRICES`; the cost section is off by default (user)
 - [tokens-new-vs-cached](decisions/tokens-new-vs-cached.md): new = input + output + cache writes, cached reads apart; one sum was misleading
@@ -90,7 +92,6 @@ Rules:
 Read a plan, the notes it links and the code it points to before starting; check its pointers against the code first.
 
 ### Active, in order
-3. [prompt-band](plans/active/prompt-band.md): a band above the prompt with crew status, progress and usage, each line optional; status line switchable (M)
 4. [agent-rows-and-stop](plans/active/agent-rows-and-stop.md): click anywhere on an agent's row; ■ stops a subagent (spike: turn.abort, TaskStop, deny) (M)
 5. [burn-rate](plans/active/burn-rate.md): forecast when a limit runs out at the current pace; optional cost limit per agent (M)
 6. [file-lock](plans/active/file-lock.md): optional lock refuses a second agent's edit of a file another running agent is changing (M)

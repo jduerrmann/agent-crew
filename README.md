@@ -24,6 +24,7 @@
   - [Subagents](#subagents)
   - [Timeline](#timeline)
   - [Files](#files)
+  - [Above the prompt](#above-the-prompt)
 - [Settings](#settings)
 - [How it works](#how-it-works)
 - [Development](#development)
@@ -144,13 +145,23 @@ A tree of every file the main chat or a subagent touched, plus every file git re
 - **Conflicts:** when two agents change the same file within ten minutes, the file is marked and a notice appears. A commit resolves the mark.
 - **Filters:** *Activity* (the default) shows every file the session's agents read or changed, plus what git reports as changed; *Changes* only what was changed; *All* every file under the root besides, untouched ones drawn quiet (git's own list, or outside a repository a walk of at most 300 folders; 4000 files at most either way).
 
+### Above the prompt
+
+A band above the prompt keeps the crew in view while the pane is closed. Each line has its own option in the settings group *Above the prompt*:
+
+- **Crew** (on): on the desktop each running agent walks as its crab, followed by the finished and failed agents and conflicts. In the terminal, a pulsing dot in each running agent's colour stands in for its crab. It stays away until the first agent of the session.
+- **Progress** (off): each running agent's name and bar beside its crab, as in its row.
+- **Usage** (off): the pane's rings for context and limits, with the time until each limit resets, and a `/compact` button beside them. In the terminal they are small bars, and a value from 80 % is coloured.
+
+A click on the band opens the pane. When a survey needs the band, the band steps aside. When another plugin draws a band of its own, such as savvy-progress during a flow, it stays beneath the crew's. The status line entry (`🦀 2 subagents running`) can be turned off as well.
+
 ## Settings
 
 <p align="center">
   <img src="media/settings.svg" alt="Settings pane: a Sections group with switches for Usage, Cost, Subagents, Timeline and Files, and a Usage group with switches for Context, 5-hour limit and Weekly limit" width="860">
 </p>
 
-Open the settings with `/crew-settings` or the *Settings* button at the top of the pane. They are grouped into *Sections*, *Usage*, *General* and *Notifications*, followed by *Version*; every change applies immediately. The pane writes the same values as `/config`; they can also be set in `~/.claude/settings.json`:
+Open the settings with `/crew-settings` or the *Settings* button at the top of the pane. They are grouped into *Sections*, *Usage*, *Above the prompt*, *General* and *Notifications*, followed by *Version*; every change applies immediately. The pane writes the same values as `/config`; they can also be set in `~/.claude/settings.json`:
 
 ```json
 { "pluginConfigs": { "agent-crew": { "options": { "showTotals": true, "showFiles": false } } } }
@@ -166,6 +177,10 @@ Open the settings with `/crew-settings` or the *Settings* button at the top of t
 | `usageContext` | `true` | Context meter in the usage section. |
 | `usageFiveHour` | `true` | 5-hour limit in the usage section. |
 | `usageWeek` | `true` | Weekly limits in the usage section. |
+| `bandAgents` | `true` | Above the prompt: running, finished and failed agents and conflicts. A click opens the pane. |
+| `bandProgress` | `false` | Above the prompt: each running agent with its bar. |
+| `bandUsage` | `false` | Above the prompt: context and limits, with the time until they reset. |
+| `statusLine` | `true` | The status line entry with the number of running agents. |
 | `autoOpen` | `true` | Open the pane when the first subagent of a session starts. |
 | `autoOpenFiles` | `true` | Open the pane when a file is first read or changed in a session, as filetree does. Either way the pane opens by itself once a session at most. |
 | `language` | `auto` | `auto`, `de` or `en`. `auto` follows Claude Code's language setting, then the system locale. |

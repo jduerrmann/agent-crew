@@ -62,6 +62,30 @@
       "description": "Show the weekly limits in the usage section",
       "default": true
     },
+    "bandAgents": {
+      "type": "boolean",
+      "title": "Above the prompt: crew line",
+      "description": "A line above the prompt with running, finished and failed subagents and conflicts; a click opens the panel",
+      "default": true
+    },
+    "bandProgress": {
+      "type": "boolean",
+      "title": "Above the prompt: progress",
+      "description": "A line above the prompt with each running subagent and its bar",
+      "default": false
+    },
+    "bandUsage": {
+      "type": "boolean",
+      "title": "Above the prompt: usage",
+      "description": "A line above the prompt with the context and the limits, and the time until they reset",
+      "default": false
+    },
+    "statusLine": {
+      "type": "boolean",
+      "title": "Status line entry",
+      "description": "How many subagents run, in Claude Code's status line",
+      "default": true
+    },
     "notifyAgents": {
       "type": "string",
       "title": "Notify when subagents end",
