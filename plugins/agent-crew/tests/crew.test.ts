@@ -19,7 +19,8 @@ function engine(on: On, listed: AgentInfo[] = []) {
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/work' }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { percent: 31, tokens: 62000, window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 6 }, { kind: 'seven_day', percentUsed: 7 }] } }) as never)
-  on('process.run', () => ({ value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false } }) as never)
+  const runs: string[][] = []
+  on('process.run', (_$, e) => (runs.push([...(e as { argv: string[] }).argv]), { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false } }) as never)
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `a${++n}` }))
   on('agent.list', () => ({ value: listed }))
   on('ui.open', (_$, e) => (opened.push(e.id), { value: { isPlaced: true as const } }))
@@ -33,7 +34,7 @@ function engine(on: On, listed: AgentInfo[] = []) {
   on('config.list', () => ({ value: [] }))
   on('config.set', (_$, e) => (configSets.push({ key: e.key, value: e.value }), { value: e.value }))
   on('tool.call', () => ({ result: 'ok' }) as never)
-  return { opened, status, toasts, clock, configSets }
+  return { opened, status, toasts, clock, configSets, runs }
 }
 
 const start = ($: Engine) => $.session.start({ cwd: '/work', surface: null, isInteractive: true })
@@ -43,6 +44,13 @@ const spawn = ($: Engine, description: string, subagentType: string) =>
 
 const mount = ($: Engine, surface: (typeof SURFACES)[number]) =>
   $.ui.mount({ plugin: 'agent-crew', surface, component: 'Pane', requestId: 'agent-crew', props: PANE_PROPS })
+
+type Mounted = Awaited<ReturnType<typeof mount>>
+
+// The file tree draws its rows in Clients (`rows-a` above the open file, `rows-o`
+// the open one, `rows-b` below): a row is clicked where it sits.
+const clickRow = (ui: Mounted, client: string, y: number) => ui.pointer({ type: 'down', x: 4, y, button: 'left', in: client })
+const hasRow = async (ui: Mounted, id: string) => JSON.stringify(await ui.drawn()).includes(`"id":"${id}"`)
 
 test('records every spawn, not only savvy ones, and splits them into tabs', async ($, on) => {
   const { opened, status } = engine(on)
@@ -131,7 +139,7 @@ const spawnBg = ($: Engine, description: string) =>
   $.agent.spawn({ prompt: 'p', description, subagentType: 'general-purpose', background: true } as never)
 
 test('two agents changing one file raise a conflict, in a notice and in the tree', async ($, on) => {
-  const { toasts } = engine(on)
+  const { toasts, clock } = engine(on)
   await start($)
   await spawn($, 'Erster', 'general-purpose')
   await spawn($, 'Zweiter', 'general-purpose')
@@ -142,10 +150,12 @@ test('two agents changing one file raise a conflict, in a notice and in the tree
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     expect(JSON.stringify(await ui.drawn())).toContain('⚠')
-    await ui.press({ key: 'file-/work/src/app.ts' })
+    await clickRow(ui, 'rows-a', 1)
     expect(await ui.find({ text: /Von mehreren Agenten geändert/ })).toBeDefined()
     expect(await ui.find({ text: /Verlauf/ })).toBeDefined()
-    await ui.press({ key: 'file-/work/src/app.ts' })
+    await clock.advance(1000)
+    await clickRow(ui, 'rows-o', 0)
+    await clock.advance(1000)
   }
 })
 
@@ -273,21 +283,27 @@ test('settings write through /config and take effect at once', async ($, on) => 
 })
 
 test('the search line narrows the file tree, and Enter opens the first hit', async ($, on) => {
-  engine(on)
+  const { clock } = engine(on)
   await start($)
   await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
   await $.tool.call({ tool: 'Read', file_path: '/work/src/utils.ts' } as never)
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeDefined()
-    await ui.input({ key: 'file-q', text: 'util', kind: 'change' })
-    expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeUndefined()
-    expect(await ui.find({ key: 'file-/work/src/utils.ts' })).toBeDefined()
-    await ui.input({ key: 'file-q', text: 'util' })
+    expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+    // A click gives the field the keys; it spans the frame and has no button.
+    await ui.resize({ columns: 40, rows: 3, in: 'search' })
+    await ui.pointer({ type: 'down', x: 5, y: 1, button: 'left', in: 'search' })
+    for (const key of ['u', 't', 'i', 'l']) await ui.key({ key, in: 'search' })
+    expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
+    expect(await hasRow(ui, '/work/src/utils.ts')).toBe(true)
+    expect(JSON.stringify(await ui.drawn())).toContain('1 Treffer')
+    await ui.key({ key: 'return', in: 'search' })
     expect(await ui.find({ text: /Verlauf/ })).toBeDefined()
-    await ui.press({ key: 'file-q-clear' })
-    expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeDefined()
-    await ui.press({ key: 'file-/work/src/utils.ts' })
+    // The × at the field's right end clears it.
+    await ui.pointer({ type: 'down', x: 38, y: 1, button: 'left', in: 'search' })
+    expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+    await clickRow(ui, 'rows-o', 0)
+    await clock.advance(1000)
   }
 })
 
@@ -297,8 +313,8 @@ test('a freshly touched file shimmers on the desktop', async ($, on) => {
   await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'a', new_string: 'b' } as never)
   const ui = await mount($, 'desktop')
   const drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).toContain('linearGradient')
-  expect(drawn).toContain('animateTransform')
+  expect(drawn).toContain('filerows.tsx')
+  expect(drawn).toContain('"sh":"write"')
 })
 
 test('cleared agents stay gone when the engine list still holds them', async ($, on) => {
@@ -321,9 +337,9 @@ test('grep -n and sed -n count the file they read', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: "sed -n '1,40p' src/utils.ts" } as never)
   await $.tool.call({ tool: 'Bash', command: 'head -n 20 README.md' } as never)
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeDefined()
-  expect(await ui.find({ key: 'file-/work/src/utils.ts' })).toBeDefined()
-  expect(await ui.find({ key: 'file-/work/README.md' })).toBeDefined()
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  expect(await hasRow(ui, '/work/src/utils.ts')).toBe(true)
+  expect(await hasRow(ui, '/work/README.md')).toBe(true)
 })
 
 test('subagents and files can each be hidden', { options: { showAgents: false, showFiles: false } }, async ($, on) => {
@@ -334,7 +350,7 @@ test('subagents and files can each be hidden', { options: { showAgents: false, s
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     expect(await ui.find({ key: 'd-a1' })).toBeUndefined()
-    expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeUndefined()
+    expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
     expect(JSON.stringify(await ui.drawn())).toContain('Kontext')
   }
 })
@@ -359,4 +375,38 @@ test('the settings pane groups sections and usage meters', async ($, on) => {
   expect(configSets.at(-1)).toEqual({ key: 'agent-crew.showFiles', value: false })
   const crew = await mount($, 'terminal')
   expect(await crew.find({ key: 'files-toggle' })).toBeUndefined()
+})
+
+test("a press opens a file's card, a double press the file itself", async ($, on) => {
+  const { runs, clock } = engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    await clickRow(ui, 'rows-a', 1)
+    expect(await ui.find({ key: 'open-/work/src/app.ts' })).toBeDefined()
+    const before = runs.length
+    await clickRow(ui, 'rows-o', 0)
+    expect(runs.slice(before).some(argv => argv.join(' ').includes('/work/src/app.ts'))).toBe(true)
+    expect(await ui.find({ key: 'open-/work/src/app.ts' })).toBeDefined()
+    await clock.advance(1000)
+    await clickRow(ui, 'rows-o', 0)
+    expect(await ui.find({ key: 'open-/work/src/app.ts' })).toBeUndefined()
+    await clock.advance(1000)
+  }
+})
+
+test('a folder shuts and opens on a press', async ($, on) => {
+  engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/README.md' } as never)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    await clickRow(ui, 'rows-a', 0)
+    expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
+    expect(await hasRow(ui, '/work/README.md')).toBe(true)
+    await clickRow(ui, 'rows-a', 0)
+    expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  }
 })

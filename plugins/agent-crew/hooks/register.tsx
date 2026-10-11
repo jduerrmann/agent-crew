@@ -4,7 +4,10 @@ import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 import type { CrewUsage } from '../types'
 import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewPanel, CrewRun, CrewStatus, CrewTab } from '../types'
 import { CLAY, FONT, crab, fitText, svg, textWidth, xml } from './crab'
-import { applyNumstat, inside, keyOf, mayChange, parseStatus, posix, readTargets, resolve, treeRows, useDrives } from './files'
+import type { FileRowSpec, FileRowsProps, Seg } from './filerows'
+import type { SearchBoxProps } from './searchbox'
+import { applyNumstat, inside, keyOf, mayChange, openCommand, parseStatus, posix, readTargets, resolve, treeRows, useDrives, visibleRows } from './files'
+import type { TreeRow } from './files'
 import type { Tab, TabsProps } from './tabs'
 
 // One pane for the session's crew and what it touched. Above: every subagent,
@@ -104,7 +107,6 @@ const STRINGS = {
     main: 'Hauptchat',
     totalsTitle: 'Kosten',
     search: 'Dateien suchen',
-    searchOpen: 'öffnen',
     hits: (n: number) => `${n} Treffer`,
     noHits: 'Keine Datei passt zur Suche.',
     fresh: 'neu',
@@ -128,6 +130,8 @@ const STRINGS = {
     focusOn: 'Seine Dateien hervorheben',
     focusOff: 'Hervorhebung aufheben',
     history: 'Verlauf',
+    openIt: 'Öffnen',
+    openFailed: (name: string) => `${name} ließ sich nicht öffnen`,
     histKind: { read: 'gelesen', write: 'geändert', commit: 'committet' },
     changes: 'Änderungen',
     newFile: 'Neue Datei',
@@ -178,7 +182,6 @@ const STRINGS = {
     main: 'main chat',
     totalsTitle: 'Cost',
     search: 'Search files',
-    searchOpen: 'open',
     hits: (n: number) => `${n} ${n === 1 ? 'hit' : 'hits'}`,
     noHits: 'No file matches the search.',
     fresh: 'new',
@@ -202,6 +205,8 @@ const STRINGS = {
     focusOn: 'Highlight its files',
     focusOff: 'Clear highlight',
     history: 'History',
+    openIt: 'Open',
+    openFailed: (name: string) => `Could not open ${name}`,
     histKind: { read: 'read', write: 'changed', commit: 'committed' },
     changes: 'Changes',
     newFile: 'New file',
@@ -1148,80 +1153,82 @@ const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: 'a
 }
 
 const MAX_FILE_ROWS = 80
-const FILE_ROW_H = 20
 
-const dirRowSvg = (W: number, name: string, depth: number): string =>
-  svg(W, FILE_ROW_H, `<text class="s" x="${depth * 14}" y="14" font-family="${FONT}" font-size="12">▾ ${xml(fitText(name + '/', 12, W - depth * 14 - 20))}</text>`, false)
+// A Client's props are plain data: a segment carries only the fields it sets.
+const plainSeg = (s: Seg): Seg => Object.fromEntries(Object.entries(s).filter(([, x]) => x !== undefined && x !== false)) as Seg
 
 // The shimmer's tones, after filetree's (Kurt Buhler, MIT): the base colour, then
 // three steps lighter for the band's edge, shoulder and crest.
-const SHIMMER: Record<CrewFile['lastKind'], readonly [string, string, string, string]> = {
+const SHIMMER: Record<CrewFile['lastKind'], string[]> = {
   read: ['#a855f7', '#c084fc', '#d8b4fe', '#f3e8ff'],
   write: ['#f97316', '#fb923c', '#fdba74', '#ffedd5'],
   commit: ['#22c55e', '#4ade80', '#86efac', '#dcfce7'],
 }
 
-/** A gradient whose bright band sweeps from `from` to `to`, again and again. */
-const shimmerOf = (id: string, kind: CrewFile['lastKind'], from: number, to: number): string => {
-  const [base, edge, shoulder, crest] = SHIMMER[kind]
-  const band = 44
-  const start = from - band - 8
-  const end = to + 8
-  // About 18 characters a second, as filetree's band moves.
-  const dur = Math.max(0.7, (end - start) / 125).toFixed(2)
-  return (
-    `<defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${band}" y2="0">` +
-    `<stop offset="0" stop-color="${base}"/><stop offset=".28" stop-color="${edge}"/><stop offset=".42" stop-color="${shoulder}"/>` +
-    `<stop offset=".5" stop-color="${crest}"/><stop offset=".58" stop-color="${shoulder}"/><stop offset=".72" stop-color="${edge}"/><stop offset="1" stop-color="${base}"/>` +
-    `<animateTransform attributeName="gradientTransform" type="translate" from="${start} 0" to="${end} 0" dur="${dur}s" repeatCount="indefinite"/>` +
-    `</linearGradient></defs>`
-  )
+// A double press on a file opens it, as in filetree; a single one its card.
+const DOUBLE_MS = 450
+let lastPress = { key: '', at: 0 }
+let osName: 'linux' | 'darwin' | 'win32' | undefined
+
+async function openFile($: EngineInterface, path: string): Promise<void> {
+  if (!osName) {
+    if (fold) osName = 'win32'
+    else {
+      try {
+        osName = (await $.process.run(['uname', '-s'], { timeoutMs: 3_000 })).stdout.trim() === 'Darwin' ? 'darwin' : 'linux'
+      } catch {
+        osName = 'linux'
+      }
+    }
+  }
+  const { argv, env } = openCommand(osName, path)
+  try {
+    const r = await $.process.run(argv, { timeoutMs: 10_000, ...(env ? { env } : {}) })
+    if (r.exitCode !== 0) $.ui.toast(tr().openFailed(path.split('/').pop() ?? path))
+  } catch {
+    $.ui.toast(tr().openFailed(path.split('/').pop() ?? path))
+  }
 }
 
-// One file: its glyph and name in the colour of what last happened to it (a fresh
-// one shimmers), the dots of the agents that touched it, its git badge at the right.
-const fileRowSvg = (
-  W: number,
-  name: string,
-  depth: number,
-  v: FileView,
-  byAgent: Map<string, CrewRun>,
-  flags: { isFresh: boolean; isOpen: boolean; isDim: boolean; hasConflict: boolean },
-): string => {
-  const x = depth * 14
-  const y = 14
-  const color = fileColor(v)
-  const badge = gitBadge(v)
-  const agents = v.file?.agents.slice(0, 6) ?? []
-  const warnW = flags.hasConflict ? 16 : 0
-  const badgeW = badge ? textWidth(badge, 11) + 10 : 0
-  const dotsW = agents.length * 9
-  const nameW = W - x - 18 - badgeW - dotsW - warnW - 6
-  const dots = agents
-    .map((a, j) => `<circle cx="${W - warnW - badgeW - dotsW + j * 9 + 4}" cy="${y - 4}" r="3.2" fill="${agentColor(a, byAgent)}"/>`)
-    .join('')
-  const shown = fitText(name, 12, nameW)
-  // A fresh file shimmers as filetree's do: a bright band sweeps across its glyph
-  // and name, in the tone of what just happened to it.
-  const shimmerId = `sh${hash(v.key)}`
-  const shimmer = flags.isFresh ? shimmerOf(shimmerId, v.file?.lastKind ?? 'read', x, x + 16 + textWidth(shown, 12)) : ''
-  const paint = flags.isFresh ? `url(#${shimmerId})` : color
-  return svg(
-    W,
-    FILE_ROW_H,
-    shimmer +
-      `<g opacity="${flags.isDim ? 0.35 : 1}">` +
-      (flags.isOpen ? `<rect class="k" x="${Math.max(0, x - 4)}" y="1" width="${W - Math.max(0, x - 4)}" height="${FILE_ROW_H - 2}" rx="5"/>` : '') +
-      `<text x="${x}" y="${y}" font-family="${FONT}" font-size="12" fill="${paint}">${fileGlyph(v)}</text>` +
-      `<text${flags.isFresh ? '' : ' class="t"'} x="${x + 16}" y="${y}" font-family="${FONT}" font-size="12"${flags.isFresh ? ` fill="${paint}" font-weight="600"` : flags.isOpen ? ' font-weight="600"' : ''}>${xml(shown)}</text>` +
-      dots +
-      (badge
-        ? `<text x="${W - warnW}" y="${y}" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums" fill="${v.gitFile ? WRITE_COLOR : COMMIT_COLOR}">${xml(badge)}</text>`
-        : '') +
-      (flags.hasConflict ? `<text class="live" x="${W}" y="${y}" text-anchor="end" font-family="${FONT}" font-size="12" fill="#D0453F">⚠</text>` : '') +
-      `</g>`,
-    false,
-  )
+// Enter in the search line: the first file the query matches, its card open.
+async function openFirstHit($: EngineInterface, text: string): Promise<void> {
+  const q = text.trim().toLowerCase()
+  if (!q) return
+  const g = await read($, git)
+  const p = await readPanel($)
+  const views = fileViews(await read($, files), g, g?.root ?? posix(await $.session.cwd()), p.fileFilter)
+  const hit = treeRows(views.filter(v => v.label.toLowerCase().includes(q)).map(v => ({ key: v.key, label: v.label }))).find(r => !r.isDir)
+  if (!hit) return
+  await setPanel($, () => ({ openFile: hit.key, fileQuery: text }))
+  await loadDiff($, hit.key)
+}
+
+// The card (history and diff) of one file, open or shut.
+async function toggleCard($: EngineInterface, key: string): Promise<void> {
+  const opening = (await readPanel($)).openFile !== key
+  await setPanel($, () => ({ openFile: opening ? key : undefined }))
+  if (opening) await loadDiff($, key)
+}
+
+// A press on a row of the tree: a folder shuts or opens, a file its card, and a
+// second press on the same file soon after opens the file itself.
+async function pressRow($: EngineInterface, id: string): Promise<void> {
+  if (id.startsWith('dir:')) {
+    await setPanel($, q => {
+      const shut = q.shutDirs ?? []
+      return { shutDirs: shut.includes(id) ? shut.filter(k => k !== id) : [...shut, id] }
+    })
+    return
+  }
+  const at = await $.clock.now()
+  const isDouble = lastPress.key === id && at - lastPress.at < DOUBLE_MS
+  lastPress = { key: isDouble ? '' : id, at }
+  if (!isDouble) {
+    await toggleCard($, id)
+    return
+  }
+  const path = (await read($, files)).find(f => f.key === id)?.path ?? (await read($, git))?.files[id]?.path
+  if (path) await openFile($, path)
 }
 
 const agentColor = (id: string, byAgent: Map<string, CrewRun>): string => {
@@ -1674,12 +1681,30 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // A click on a tab of the Client tab strip.
+  // A click in one of the pane's Clients: a tab of the tab strip, or a row of
+  // the file tree.
   on('ui.message', async ($, e, next) => {
-    if (e.requestId !== PANE || e.element !== 'tabs' || !e.data || typeof e.data !== 'object') return next(e)
-    const tab = (e.data as { tab?: unknown }).tab
-    if (tab === 'active' || tab === 'done') await setPanel($, () => ({ tab }))
-    return {}
+    if (e.requestId !== PANE || typeof e.element !== 'string' || !e.data || typeof e.data !== 'object') return next(e)
+    if (e.element === 'tabs') {
+      const tab = (e.data as { tab?: unknown }).tab
+      if (tab === 'active' || tab === 'done') await setPanel($, () => ({ tab }))
+      return {}
+    }
+    if (e.element === 'search') {
+      const data = e.data as { query?: unknown; submit?: unknown }
+      if (typeof data.query === 'string') {
+        const query = data.query
+        await setPanel($, () => ({ fileQuery: query }))
+      }
+      if (typeof data.submit === 'string') await openFirstHit($, data.submit)
+      return {}
+    }
+    if (e.element.startsWith('rows-')) {
+      const id = (e.data as { press?: unknown }).press
+      if (typeof id === 'string') await pressRow($, id)
+      return {}
+    }
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -1945,40 +1970,41 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    // As filetree's: `/` and a field; Enter opens the first hit's history and diff.
+    // The search line: on the cell grid where the surface has a Client, the
+    // frame's whole width and no button; elsewhere the surface's own field. Enter
+    // opens the first hit's history and diff.
     const SearchInput = 'Input' in ui ? ui.Input : undefined
-    const openFirstHit = async (text: string) => {
-      const q = text.trim().toLowerCase()
-      if (!q) return
-      const hit = treeRows(allViews.filter(v => v.label.toLowerCase().includes(q)).map(v => ({ key: v.key, label: v.label }))).find(r => !r.isDir)
-      if (!hit) return
-      await setPanel($, () => ({ openFile: hit.key, fileQuery: text }))
-      await loadDiff($, hit.key)
-    }
     const searchRow =
-      SearchInput && !p.isFilesCollapsed && allViews.length > 0 ? (
-        <Box key="files-search" flexDirection="row" alignItems="center" gap={1}>
-          <Box flexGrow={1}>
-            <SearchInput
-              key="file-q"
-              label="/ "
-              placeholder={s.search}
-              submitLabel={s.searchOpen}
-              value={p.fileQuery ?? ''}
-              onInput={(text: string) => void setPanel($, () => ({ fileQuery: text }))}
-              onSubmit={(text: string) => void openFirstHit(text)}
-            />
+      !p.isFilesCollapsed && allViews.length > 0 ? (
+        Client ? (
+          <Client
+            key="search"
+            module="./searchbox.tsx"
+            width="100%"
+            props={{ value: p.fileQuery ?? '', placeholder: s.search, hits: query ? s.hits(views.length) : '', line: '#6b6b68', accent: CLAY } satisfies SearchBoxProps}
+          />
+        ) : SearchInput ? (
+          <Box key="files-search" flexDirection="row" alignItems="center" gap={1}>
+            <Box flexGrow={1}>
+              <SearchInput
+                key="file-q"
+                placeholder={s.search}
+                value={p.fileQuery ?? ''}
+                onInput={(text: string) => void setPanel($, () => ({ fileQuery: text }))}
+                onSubmit={(text: string) => void openFirstHit($, text)}
+              />
+            </Box>
+            {query ? <Text dimColor>{s.hits(views.length)}</Text> : null}
+            {query ? <Button key="file-q-clear" label="×" plain onPress={() => setPanel($, () => ({ fileQuery: '' }))} /> : null}
           </Box>
-          {query ? <Text dimColor>{s.hits(views.length)}</Text> : null}
-          {query ? <Button key="file-q-clear" label="×" plain onPress={() => setPanel($, () => ({ fileQuery: '' }))} /> : null}
-        </Box>
+        ) : null
       ) : null
 
     // About 8 CSS px a column on the desktop, less the frame's border and padding.
     const desktopW = Math.max(220, Math.min(900, ((e.props.bodyColumns || 40) - FRAME_COLS) * 8 - 8))
 
     // One file row is one Button: a press opens its history and diff beneath it.
-    const fileTree = treeRows(views.map(v => ({ key: v.key, label: v.label })))
+    const fileTree = visibleRows(treeRows(views.map(v => ({ key: v.key, label: v.label }))), new Set(p.shutDirs ?? []))
     const viewByKey = new Map(views.map(v => [v.key, v]))
     const openDiff = await read($, diff)
     const fileDetails = (v: FileView, pad: string) => {
@@ -1993,12 +2019,13 @@ export const register: Register = (on, options) => {
               {s.conflictLine(v.file.conflict.map(a => (a === 'main' ? s.main : byAgent.get(a)?.description || a.slice(0, 8))).join(', '))}
             </Text>
           )}
-          {hist.length > 0 && (
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center">
             <Text bold dimColor>
               {pad}
-              {s.history}
+              {hist.length > 0 ? s.history : ''}
             </Text>
-          )}
+            <Button key={`open-${v.key}`} label={`↗ ${s.openIt}`} variant="secondary" onPress={() => openFile($, v.file?.path ?? v.gitFile?.path ?? v.key)} />
+          </Box>
           {hist.map((ev, i) => (
             <Text key={`h-${v.key}-${i}`} wrap="truncate-end">
               {pad}
@@ -2027,85 +2054,104 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    // The desktop draws each row as a picture (colours, agent dots, the pulse of a
-    // fresh file) with a small button beside it; other surfaces a text Button.
-    const RowSvg = isDesktop && 'Svg' in ui ? ui.Svg : undefined
-    const rowW = desktopW - 36
-    const fileRow = (r: (typeof fileTree)[number]) => {
-      const pad = '  '.repeat(r.depth)
+    // One row a file, as filetree's: a press on it opens its card (history and
+    // diff), a double press the file itself; a folder shuts and opens on a press.
+    // Where the surface has a Client the rows are drawn on its cell grid, a fresh
+    // name shimmering while it still takes presses; elsewhere each row is a Button.
+    const fileRowsOf = (rows: TreeRow[], base: number): FileRowSpec[] =>
+      rows.flatMap(r => {
+        const indent = '  '.repeat(Math.max(0, r.depth - base))
+        if (r.isDir) return [{ id: r.key, left: [{ t: `${indent}${shut.has(r.key) ? '▸' : '▾'} ${r.name}/`, dim: true }], right: [] }]
+        const v = viewByKey.get(r.key)
+        if (!v) return []
+        const color = fileColor(v)
+        const badge = gitBadge(v)
+        const isFresh = Boolean(v.file && at - v.file.lastAt < FRESH_MS)
+        const isOpen = p.openFile === v.key
+        const isDim = Boolean(p.focusAgent && !(v.file?.agents ?? []).includes(p.focusAgent))
+        const tone = isFresh && !isDim ? (v.file?.lastKind ?? 'read') : undefined
+        const right: Seg[] = (v.file?.agents.slice(0, 6) ?? []).map(a => ({ t: '●', c: agentColor(a, byAgent), dim: isDim }))
+        if (badge) right.push({ t: ` ${badge}`, c: v.gitFile ? WRITE_COLOR : COMMIT_COLOR, dim: isDim })
+        if ((v.file?.conflict?.length ?? 0) > 1) right.push({ t: ' ⚠', c: '#D0453F' })
+        right.push({ t: ` ${isOpen ? '▾' : '▸'} `, dim: true })
+        return [
+          {
+            id: r.key,
+            left: [
+              { t: indent },
+              { t: `${fileGlyph(v)} `, c: color, dim: isDim, sh: tone },
+              { t: r.name, b: isFresh || isOpen, c: isOpen ? color : undefined, dim: isDim, sh: tone },
+            ],
+            right,
+          },
+        ]
+      })
+    const rowsClient = (key: string, rows: TreeRow[], base = 0) =>
+      Client && rows.length > 0 ? (
+        <Client
+          key={key}
+          module="./filerows.tsx"
+          width="100%"
+          props={{ rows: fileRowsOf(rows, base).map(r => ({ ...r, left: r.left.map(plainSeg), right: r.right.map(plainSeg) })), tones: SHIMMER, hoverBg: '#3a3a3826' } satisfies FileRowsProps}
+        />
+      ) : null
+
+    // Without a Client: a Button a row, the same presses.
+    const shut = new Set(p.shutDirs ?? [])
+    const buttonRow = (r: TreeRow) => {
       if (r.isDir)
-        return RowSvg ? (
-          <RowSvg key={`f-${r.key}`} source={dirRowSvg(rowW, r.name, r.depth)} alt={`${r.name}/`} width={rowW} height={FILE_ROW_H} />
-        ) : (
-          <Text key={`f-${r.key}`} dimColor wrap="truncate-end">
-            {pad}▾ {r.name}/
-          </Text>
+        return (
+          <Box key={`f-${r.key}`} marginLeft={r.depth * 2}>
+            <Button key={`dir-${r.key}`} plain dimColor onPress={() => pressRow($, r.key)}>
+              {shut.has(r.key) ? '▸' : '▾'} {r.name}/
+            </Button>
+          </Box>
         )
       const v = viewByKey.get(r.key)
       if (!v) return null
       const color = fileColor(v)
       const badge = gitBadge(v)
-      const isFresh = Boolean(v.file && at - v.file.lastAt < FRESH_MS)
       const isOpen = p.openFile === v.key
-      const isDim = Boolean(p.focusAgent && !(v.file?.agents ?? []).includes(p.focusAgent))
-      const hasConflict = (v.file?.conflict?.length ?? 0) > 1
-      const toggle = async () => {
-        const opening = (await readPanel($)).openFile !== v.key
-        await setPanel($, () => ({ openFile: opening ? v.key : undefined }))
-        if (opening) await loadDiff($, v.key)
-      }
-      // An open file and its history and diff share a card framed in the file's
-      // colour (red on a conflict), indented by its depth in the tree.
-      const frame = isOpen ? card(hasConflict ? '#D0453F' : color, r.depth) : { flexDirection: 'column' as const }
-      if (RowSvg) {
-        const w = isOpen ? rowW - FRAME_COLS * 8 - r.depth * 16 : rowW
-        return (
-          <Box key={`f-${r.key}`} {...frame}>
-            <Box flexDirection="row" alignItems="center">
-              <RowSvg
-                source={fileRowSvg(w, r.name, isOpen ? 0 : r.depth, v, byAgent, { isFresh, isOpen: false, isDim, hasConflict })}
-                alt={`${r.name}${badge ? ', ' + badge : ''}${hasConflict ? ', ⚠' : ''}`}
-                width={w}
-                height={FILE_ROW_H}
-              />
-              <Button key={`file-${r.key}`} label={isOpen ? '▾' : '▸'} plain onPress={toggle} />
-            </Box>
-            {isOpen && fileDetails(v, '')}
-          </Box>
-        )
-      }
       return (
-        <Box key={`f-${r.key}`} {...frame}>
-          <Button key={`file-${r.key}`} plain onPress={toggle}>
-            {isOpen ? '' : pad}
-            <Text dimColor>{isOpen ? '▾ ' : '  '}</Text>
-            <Text color={color} dimColor={isDim}>
-              {fileGlyph(v)}
-            </Text>{' '}
-            <Text bold={isFresh || isOpen} color={isFresh ? color : undefined} dimColor={isDim}>
-              {r.name}
-            </Text>{' '}
+        <Box key={`f-${r.key}`} flexDirection="row" justifyContent="space-between" gap={1} marginLeft={isOpen ? 0 : r.depth * 2}>
+          <Button key={`file-${r.key}`} plain onPress={() => pressRow($, v.key)}>
+            <Text color={color}>{`${fileGlyph(v)} `}</Text>
+            <Text bold={isOpen}>{r.name}</Text>
+          </Button>
+          <Text>
             {(v.file?.agents.slice(0, 6) ?? []).map(a => (
-              <Text key={`fa-${r.key}-${a}`} color={agentColor(a, byAgent)} dimColor={isDim}>
+              <Text key={`fa-${r.key}-${a}`} color={agentColor(a, byAgent)}>
                 ●
               </Text>
             ))}
-            {badge ? (
-              <Text color={v.gitFile ? WRITE_COLOR : COMMIT_COLOR} dimColor={isDim}>
-                {' '}
-                {badge}
-              </Text>
-            ) : null}
-            {hasConflict ? <Text color="red"> ⚠</Text> : null}
-          </Button>
-          {isOpen && fileDetails(v, '')}
+            {badge ? <Text color={v.gitFile ? WRITE_COLOR : COMMIT_COLOR}> {badge}</Text> : null}
+            {(v.file?.conflict?.length ?? 0) > 1 ? <Text color="red"> ⚠</Text> : null}
+          </Text>
         </Box>
       )
     }
+
+    // The open file and its card sit between the rows above and below it.
+    const shownRows = fileTree.slice(0, MAX_FILE_ROWS)
+    const openIdx = shownRows.findIndex(r => !r.isDir && r.key === p.openFile)
+    const openRow = openIdx >= 0 ? shownRows[openIdx] : undefined
+    const openView = openRow ? viewByKey.get(openRow.key) : undefined
+    const above = openIdx >= 0 ? shownRows.slice(0, openIdx) : shownRows
+    const below = openIdx >= 0 ? shownRows.slice(openIdx + 1) : []
+    const rowsOf = (key: string, rows: TreeRow[], base = 0) => (Client ? rowsClient(key, rows, base) : rows.map(buttonRow))
+    const openCard =
+      openRow && openView ? (
+        <Box key="f-open" {...card((openView.file?.conflict?.length ?? 0) > 1 ? '#D0453F' : fileColor(openView), openRow.depth)}>
+          {rowsOf('rows-o', [openRow], openRow.depth)}
+          {fileDetails(openView, '')}
+        </Box>
+      ) : null
     const filesBody = (
       <Box key="files-body" flexDirection="column">
         {!p.isFilesCollapsed && views.length === 0 && <Text dimColor>{query ? s.noHits : s.noFiles}</Text>}
-        {!p.isFilesCollapsed && fileTree.slice(0, MAX_FILE_ROWS).map(fileRow)}
+        {!p.isFilesCollapsed && rowsOf('rows-a', above)}
+        {!p.isFilesCollapsed && openCard}
+        {!p.isFilesCollapsed && rowsOf('rows-b', below)}
         {!p.isFilesCollapsed && fileTree.length > MAX_FILE_ROWS && <Text dimColor>{s.more(fileTree.length - MAX_FILE_ROWS)}</Text>}
         {!p.isFilesCollapsed && views.length > 0 && <Text dimColor>{s.legend}</Text>}
       </Box>

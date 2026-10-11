@@ -7,7 +7,7 @@
       "name": "agent-crew",
       "source": "./plugins/agent-crew",
       "description": "Mod: one pane for every subagent (tabs, details, timeline), the files they read, changed and committed (history, diffs, conflicts), and the session's usage.",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "category": "mod"
     }
   ]

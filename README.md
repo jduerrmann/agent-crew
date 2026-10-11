@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Claude_Code-mod-D97757" alt="Claude Code mod">
-  <img src="https://img.shields.io/badge/version-0.4.0-378ADD" alt="Version 0.4.0">
+  <img src="https://img.shields.io/badge/version-0.5.0-378ADD" alt="Version 0.5.0">
   <img src="https://img.shields.io/badge/license-PolyForm_Noncommercial-22c55e" alt="PolyForm Noncommercial license">
 </p>
 
@@ -135,7 +135,8 @@ A tree of every file the main chat or a subagent touched, plus every file git re
 - **Recent activity:** a file that was just read, changed or committed shimmers in its colour for a few seconds.
 - **Search:** the search line narrows the tree to matching paths; Enter opens the first hit.
 - **Agents:** coloured dots show which agents touched a file.
-- **Details:** expanding a file shows its history (who read, changed or committed it, and when) and its diff against `HEAD`, or its content if it is untracked.
+- **Details:** clicking a file shows its history (who read, changed or committed it, and when) and its diff against `HEAD`, or its content if it is untracked.
+- **Open:** double-clicking a file, or *Open* in its details, opens it in the app your system uses for that kind of file. Clicking a folder collapses or expands it.
 - **Conflicts:** when two agents change the same file within ten minutes, the file is marked and a notice appears. A commit resolves the mark.
 - **Changes only** hides files that were only read. The header shows the branch and how far it is ahead of or behind its upstream.
 

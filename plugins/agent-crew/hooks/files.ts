@@ -213,6 +213,18 @@ export function applyNumstat(raw: string, root: string, files: Record<string, Cr
   }
 }
 
+// --- opening a file in the app the system gives its kind, after filetree's
+// hooks/open.ts. On Windows the path travels in the environment, never quoted.
+
+const WIN_OPEN =
+  "$ErrorActionPreference = 'Stop'; [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{ FileName = $env:CREW_OPEN_TARGET; UseShellExecute = $true }) | Out-Null"
+
+export function openCommand(os: 'linux' | 'darwin' | 'win32', path: string): { argv: string[]; env?: Record<string, string> } {
+  if (os === 'win32') return { argv: ['powershell', '-NoProfile', '-NonInteractive', '-Command', WIN_OPEN], env: { CREW_OPEN_TARGET: path.replace(/\//g, '\\') } }
+  if (os === 'darwin') return { argv: ['open', '--', path] }
+  return { argv: ['sh', '-c', 'setsid -f xdg-open "$1" </dev/null >/dev/null 2>&1', 'sh', path] }
+}
+
 // --- the files section as a tree.
 
 export type TreeRow = {
@@ -259,4 +271,16 @@ export function treeRows(entries: { key: string; label: string }[]): TreeRow[] {
   }
   walk(root, 0)
   return rows
+}
+
+/** The rows a reader sees: nothing beneath a folder that is shut. */
+export function visibleRows(rows: TreeRow[], shut: ReadonlySet<string>): TreeRow[] {
+  const out: TreeRow[] = []
+  let hideBelow = -1
+  for (const r of rows) {
+    if (hideBelow >= 0 && r.depth > hideBelow) continue
+    hideBelow = r.isDir && shut.has(r.key) ? r.depth : -1
+    out.push(r)
+  }
+  return out
 }
