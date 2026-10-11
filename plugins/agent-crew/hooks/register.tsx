@@ -40,6 +40,7 @@ const settingsRev = atom({ plugin: 'agent-crew', key: 'settingsRev' } as const, 
 const mainCost = atom({ plugin: 'agent-crew', key: 'mainCost' } as const, { cost: 0, tokens: 0 })
 const tree = atom({ plugin: 'agent-crew', key: 'tree' } as const, null)
 const updateInfo = atom({ plugin: 'agent-crew', key: 'update' } as const, null)
+const typeColors = atom({ plugin: 'agent-crew', key: 'typeColors' } as const, {})
 
 // The plugin's options, set by register on every (re)load.
 let opts: Record<string, unknown> = {}
@@ -451,56 +452,74 @@ async function retire($: EngineInterface, gone: CrewRun[]): Promise<void> {
 // Writes the run list through the cap; what falls off is retired.
 async function storeRuns($: EngineInterface, fn: (list: CrewRun[]) => CrewRun[]): Promise<void> {
   let gone: CrewRun[] = []
+  let kept: CrewRun[] = []
   await update($, runs, list => {
     const all = fn(list)
-    const kept = trimRuns(all)
+    kept = trimRuns(all)
     gone = all.filter(r => !kept.includes(r))
     return kept
   })
   await retire($, gone)
+  await learnTypes($, kept)
 }
 
 // ---------------------------------------------------------------------------
 // Types, colours, costumes.
 
-const SAVVY_COLOR: Record<string, string> = {
-  fable: '#7F77DD',
-  heavy: '#D85A30',
-  careful: '#BA7517',
-  medium: '#378ADD',
-  light: '#1D9E75',
+// Every type its own colour: Claude Code's own types a fixed one, any other
+// type the next free one of TYPE_PALETTE when it is first seen, kept in
+// `typeColors` so it stays. Forks are grey.
+const TYPE_COLOR: Record<string, string> = {
+  'general-purpose': '#378ADD',
+  explore: '#1D9E75',
+  plan: '#BA7517',
+  'claude-code-guide': '#7F77DD',
+  'statusline-setup': '#2E9AA8',
 }
+const TYPE_PALETTE = ['#D85A30', '#C2477E', '#6F8F2E', '#9C6644', '#5C6BC0', '#E57399', '#3F8F6F', '#B0892E']
+const FORK_COLOR = '#888780'
 
-const PALETTE = ['#378ADD', '#1D9E75', '#D85A30', '#7F77DD', '#BA7517', '#C2477E', '#2E9AA8', '#6F8F2E']
-
-// `savvy-careful`, or `savvy-flow:savvy-careful` when the agent ships in a plugin.
+// `my-agent`, or `my-plugin:my-agent` when the agent ships in a plugin.
 const bareType = (type: string): string => type.replace(/^[^:]*:/, '')
-
-const savvyTier = (type: string): string | undefined => {
-  const bare = bareType(type)
-  const t = bare.replace(/^savvy-/, '').toLowerCase()
-  return bare.startsWith('savvy-') && t in SAVVY_COLOR ? t : undefined
-}
+const typeKey = (type: string): string => bareType(type).toLowerCase()
 
 const hash = (s: string): number => [...s].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7)
 
+// The colours handed out, read from the store at the start and on each new type.
+let typeColorCache: Record<string, string> = {}
+
 const colorOf = (r: Pick<CrewRun, 'type' | 'kind'>): string => {
-  const tier = savvyTier(r.type)
-  if (tier) return SAVVY_COLOR[tier] ?? '#888780'
-  if (r.kind === 'fork') return '#888780'
-  return PALETTE[hash(bareType(r.type)) % PALETTE.length] ?? '#888780'
+  if (r.kind === 'fork') return FORK_COLOR
+  const key = typeKey(r.type)
+  return TYPE_COLOR[key] ?? typeColorCache[key] ?? TYPE_PALETTE[hash(key) % TYPE_PALETTE.length] ?? FORK_COLOR
+}
+
+// A type seen for the first time takes the first colour no other type holds;
+// once all are taken, they go round again.
+async function learnTypes($: EngineInterface, list: readonly CrewRun[]): Promise<void> {
+  const fresh = [...new Set(list.filter(r => r.kind !== 'fork').map(r => typeKey(r.type)))].filter(k => !TYPE_COLOR[k] && !typeColorCache[k])
+  if (!fresh.length) return
+  await update($, typeColors, held => {
+    const out = { ...held }
+    for (const k of fresh) {
+      if (out[k]) continue
+      const taken = new Set(Object.values(out))
+      out[k] = TYPE_PALETTE.find(c => !taken.has(c)) ?? TYPE_PALETTE[Object.keys(out).length % TYPE_PALETTE.length] ?? FORK_COLOR
+    }
+    return out
+  })
+  typeColorCache = await read($, typeColors)
 }
 
 const costumeOf = (r: Pick<CrewRun, 'type' | 'kind'>): string => {
-  const tier = savvyTier(r.type)
-  if (tier) return tier
-  const bare = bareType(r.type).toLowerCase()
-  if (bare === 'explore') return 'explore'
-  if (bare === 'plan') return 'careful'
-  if (bare === 'claude-code-guide') return 'fable'
-  if (r.kind === 'workflow') return 'medium'
-  if (r.kind === 'teammate') return 'light'
-  return 'other'
+  const key = typeKey(r.type)
+  if (key === 'explore') return 'pirate'
+  if (key === 'plan') return 'engineer'
+  if (key === 'claude-code-guide') return 'astronaut'
+  if (r.kind === 'workflow') return 'chef'
+  if (r.kind === 'teammate') return 'racer'
+  if (key === 'general-purpose') return 'detective'
+  return 'cap'
 }
 
 const typeLabel = (r: CrewRun): string => (r.kind === 'fork' ? tr().fork : bareType(r.type) || '—')
@@ -2056,6 +2075,8 @@ export const register: Register = (on, options) => {
     }
     flipTimer = undefined
     desktopDrawnAt = -Infinity
+    // The colours a session handed out stay theirs across a reload.
+    typeColorCache = await read($, typeColors)
     await $.command.register({
       name: 'crew',
       description: 'Show or hide the crew panel: every subagent of this session, and the files read, changed and committed',
@@ -2735,9 +2756,9 @@ export const register: Register = (on, options) => {
       const toggleCompact = (
         <Button key="compact" label={p.isCompact ? `⤢ ${s.expand}` : `⤡ ${s.collapse}`} variant="secondary" onPress={() => setPanel($, q => ({ isCompact: !q.isCompact }))} />
       )
-      // A real button, at the bottom right of the agents' frame.
+      // A real button, at the bottom right of the agents' frame, under the Done tab only.
       const clearDone =
-        doneCount > 0 ? (
+        doneCount > 0 && p.tab === 'done' ? (
           <Box key="clear-row" flexDirection="row" justifyContent="flex-end" marginTop={1}>
             <Button
               key="clear"

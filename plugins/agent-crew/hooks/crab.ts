@@ -28,7 +28,7 @@ const PANE_CSS = `<style>
 @media (prefers-color-scheme: dark){.t{fill:#ececec}.s{fill:#a8a8a4}.m{fill:#7d7d79}.k{fill:#2c2c2b}.ln{stroke:#333331}.tile{fill:#262625}.tree{stroke:#454543}}
 </style>`
 
-// Pixel Clawd: a 24×18 crab on a 30×28 grid, one costume per kind of agent.
+// Pixel Clawd: a 24×18 crab on a 30×28 grid, one costume per type of agent.
 export const CLAY = '#D97757'
 const INK = '#1F1E1D'
 
@@ -60,73 +60,73 @@ const CRAB_CSS = `<style>
 .run .bd{animation:bob .5s steps(1) infinite calc(-.125s - var(--t,0s))}
 .run g{transform-box:fill-box}
 @keyframes st{50%{transform:translateY(-1px)}}@keyframes bob{50%{transform:translateY(1px)}}
-.c-fable.run{animation:float 1s ease-in-out infinite calc(0s - var(--t,0s))}
-.c-fable.run .la,.c-fable.run .lb,.c-fable.run .bd{animation:none}
-.c-fable.run .ant{animation:blink 1s steps(1) infinite calc(0s - var(--t,0s))}
-.c-fable.run .star{animation:blink .5s steps(1) infinite calc(-.25s - var(--t,0s))}
+.c-astronaut.run{animation:float 1s ease-in-out infinite calc(0s - var(--t,0s))}
+.c-astronaut.run .la,.c-astronaut.run .lb,.c-astronaut.run .bd{animation:none}
+.c-astronaut.run .ant{animation:blink 1s steps(1) infinite calc(0s - var(--t,0s))}
+.c-astronaut.run .star{animation:blink .5s steps(1) infinite calc(-.25s - var(--t,0s))}
 @keyframes float{50%{transform:translateY(-2px)}}@keyframes blink{50%{opacity:.15}}
-.c-heavy.run .it{animation:scan 1s steps(1) infinite calc(0s - var(--t,0s))}
-.c-heavy.run .gl{animation:blink 1s steps(1) infinite calc(-.5s - var(--t,0s))}
+.c-detective.run .it{animation:scan 1s steps(1) infinite calc(0s - var(--t,0s))}
+.c-detective.run .gl{animation:blink 1s steps(1) infinite calc(-.5s - var(--t,0s))}
 @keyframes scan{25%{transform:translate(-1px,1px)}50%{transform:translate(-2px,2px)}75%{transform:translate(-1px,1px)}}
-.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite calc(0s - var(--t,0s))}
+.c-engineer.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite calc(0s - var(--t,0s))}
 @keyframes twist{50%{transform:rotate(-35deg)}}
-.c-medium.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite calc(0s - var(--t,0s))}
-.c-medium.run .egg{animation:flip 1s ease-in-out infinite calc(0s - var(--t,0s))}
+.c-chef.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite calc(0s - var(--t,0s))}
+.c-chef.run .egg{animation:flip 1s ease-in-out infinite calc(0s - var(--t,0s))}
 @keyframes tilt{20%,40%{transform:rotate(-12deg)}}@keyframes flip{30%{transform:translateY(-5px) scaleY(-1)}60%{transform:translateY(0)}}
-.c-light.run .flag{transform-origin:0 50%;animation:wave .5s steps(1) infinite calc(0s - var(--t,0s))}
+.c-racer.run .flag{transform-origin:0 50%;animation:wave .5s steps(1) infinite calc(0s - var(--t,0s))}
 @keyframes wave{50%{transform:skewY(-12deg) scaleX(.85)}}
-.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite calc(0s - var(--t,0s))}
+.c-pirate.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite calc(0s - var(--t,0s))}
 @keyframes fence{50%{transform:rotate(25deg)}}
 .flip,.flip *{animation-play-state:paused!important}
 @media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}
 </style>`
 
 const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
-  // Astronaut in a glass dome (Fable tier, claude-code-guide).
-  fable: (f, t) => {
+  // Astronaut in a glass dome (claude-code-guide).
+  astronaut: (f, t) => {
     crabBody(f)
     f(6, 7, 18, 1, '#E6E8EE'); f(5, 8, 1, 14, '#E6E8EE'); f(24, 8, 1, 14, '#E6E8EE'); f(6, 22, 18, 1, '#C9CCD2')
     f(6, 8, 18, 14, 'rgba(169,214,245,.32)'); f(8, 9, 2, 1, '#fff'); f(8, 10, 1, 2, '#fff')
     f(14, 4, 2, 3, '#C9CCD2'); f(14, 2, 2, 2, t, 'ant'); f(13, 18, 4, 2, t)
     f(27, 3, 1, 3, '#F5C542', 'star'); f(26, 4, 3, 1, '#F5C542', 'star')
   },
-  // Detective with a magnifier (heavy tier).
-  heavy: (f, t) => {
+  // Detective with a magnifier (general-purpose).
+  detective: (f, t) => {
     crabBody(f, -4, 'it')
     stamp(f, 6, 3, ['......bbbbbb......', '....bbcbbcbbbb....', '...bbbbbbbbbbbb...', '..bcbbcbbcbbcbbb..', '.bbbbbbbbbbbbbbbb.', 'dddddddddddddddddd'], { b: '#7A4A26', c: '#A0703F', d: '#5A3519' })
     f(6, 9, 18, 1, t)
     stamp(f, 23, 1, ['.kkk.', 'k...k', 'k...k', 'k...k', '.kkk.'], { k: '#3A3A3C' }, 'it')
     f(24, 2, 3, 3, 'rgba(169,214,245,.7)', 'it'); f(25, 6, 1, 4, '#7A4A26', 'it'); f(24, 2, 1, 1, '#fff', 'gl')
   },
-  // Engineer in a hard hat (careful tier, Plan).
-  careful: (f, t) => {
+  // Engineer in a hard hat (Plan).
+  engineer: (f, t) => {
     crabBody(f)
     stamp(f, 6, 4, ['.....yyyyyyyy.....', '...yyyyyhhyyyyy...', '..yyyyyyhhyyyyyy..', '..yyyyyyhhyyyyyy..', '.yyyyyyyhhyyyyyyy.', 'dddddddddddddddddd'], { y: '#F5C542', h: '#FBE08A', d: '#C99A1E' })
     f(13, 5, 4, 2, t)
     stamp(f, 0, 10, ['.s.s', 'sss.', '.s..', '.s..'], { s: '#8E929A' }, 'it')
   },
-  // Chef tossing an omelette (medium tier, workflow agents).
-  medium: (f, t) => {
+  // Chef tossing an omelette (workflow agents).
+  chef: (f, t) => {
     crabBody(f, -4, 'pan')
     stamp(f, 6, 0, ['........lll.......', '.......lllll......', '.wwwwgwwwwwwgwwwww', 'wwwwwwwwwwwwwwwwww', 'wwwwwwwwwwwwwwwwww', 'wwwwwgwwwwwggwwwww', '.wwwwgwwwwwggwwwww', '.dddbbbbbbbbbbbbb.', '.dddbbbbbbbbbbbbb.', '.dddbbbbbbbbbbbbb.'], { w: '#F4F3EE', l: '#F7F6F2', g: '#D2D1C8', b: t, d: '#B45F43' })
     f(22, 8, 7, 2, '#4A4A48', 'pan'); f(26, 10, 1, 1, '#4A4A48', 'pan'); f(24, 7, 3, 1, '#F5B731', 'egg')
   },
-  // Racer with a checkered flag (light tier, teammates).
-  light: (f, t) => {
+  // Racer with a checkered flag (teammates).
+  racer: (f, t) => {
     crabBody(f, -4)
     stamp(f, 6, 5, ['....rrrrrrrrrr....', '..rrrrrrwwrrrrrr..', '.rrrrrrrwwrrrrrrr.', '.rrrrrrrwwrrrrrrr.', '.rrrrrrrwwrrrrrrr.', '.kkkkkkkkkkkkkkkkr'], { r: t, w: '#F8F6F1', k: INK })
     f(25, 1, 1, 9, '#8E929A')
     stamp(f, 26, 1, ['wkwk', 'kwkw', 'wkwk'], { w: '#F8F6F1', k: INK }, 'flag')
   },
   // Pirate scouting the code (Explore).
-  explore: f => {
+  pirate: f => {
     crabBody(f)
     stamp(f, 5, 3, ['.kk..............kk.', '.kkk....kkkk....kkk.', '..kkkkkkkwwkkkkkkk..', '..kkkkkkkkkkkkkkkk..', '.gggggggggggggggggg.'], { k: '#55514C', w: '#F8F6F1', g: '#F5C542' })
     f(7, 11, 11, 1, INK); f(18, 11, 4, 3, INK)
     f(27, 6, 1, 9, '#C9CCD2', 'it'); f(26, 15, 3, 1, '#7A4A26', 'it')
   },
   // Everyone else wears a cap in their type's colour.
-  other: (f, t) => {
+  cap: (f, t) => {
     crabBody(f)
     stamp(f, 8, 6, ['...cccccccc...', '.cccccccccccc.', 'cccccccccccccvvvv'], { c: t, v: t })
   },
@@ -142,7 +142,7 @@ export const crab = (x: number, y: number, costume: string, color: string, dim =
     if (!groups.has(cls)) groups.set(cls, [])
     groups.get(cls)?.push(`<rect x="${cx}" y="${cy}" width="${w}" height="${h}" fill="${c}"/>`)
   }
-  ;(COSTUMES[costume] ?? COSTUMES.other ?? ((g: Fill) => crabBody(g)))(f, color)
+  ;(COSTUMES[costume] ?? COSTUMES.cap ??((g: Fill) => crabBody(g)))(f, color)
   const group = (cls: string) => `<g class="${cls}">${(groups.get(cls) ?? []).join('')}</g>`
   const props = [...groups.keys()].filter(k => k !== 'bd' && k !== 'la' && k !== 'lb')
   const body = `<g class="bd">${(groups.get('bd') ?? []).join('')}${props.map(group).join('')}</g>`

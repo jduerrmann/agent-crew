@@ -36,8 +36,10 @@
 `/crew` opens a single pane that follows everything the session's crew does. It records every subagent, whichever way it was started, and draws each one as a pixel crab in the costume of its type:
 
 <p align="center">
-  <img src="media/crew.svg" alt="Pixel crabs in costumes: a pirate for Explore, a hard hat for Plan, an astronaut for claude-code-guide, a cap for general-purpose, a chef for workflow agents, a racer for teammates, a detective for savvy-heavy" width="860">
+  <img src="media/crew.svg" alt="Pixel crabs in costumes: a pirate for Explore, a hard hat for Plan, an astronaut for claude-code-guide, a cap, a chef for workflow agents, a racer for teammates, a detective" width="860">
 </p>
+
+A pirate for Explore, a hard hat for Plan, an astronaut for claude-code-guide, a detective for general-purpose, a chef for workflow agents, a racer for teammates, and a cap for every other type. Each type has a colour of its own: Claude Code's types a fixed one, any other type the next free one when it first shows up.
 
 The pane is built from framed sections. Each one can be switched on or off in the [settings](#settings):
 
@@ -106,7 +108,7 @@ The section is off by default. Costs are estimated from token counts and a price
 - **Bar:** Claude Code reports no progress for subagents, so while an agent runs its bar is an estimate from run time and model requests. It fills quickly at first, then ever more slowly, and stops short of 90 %. A worker that reports its steps through [savvy-progress](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress)'s `step` tool fills the bar for real (`3/5 · writing tests`). Finished agents get a full bar: green when done, red when failed, grey when stopped.
 - **Details:** expanding a row shows the agent's task, its recent tool calls and messages, the files it read and changed, and its final answer. *Highlight its files* dims every other file in the tree.
 - **Notifications** when background or workflow agents finish, and whenever an agent fails or is stopped.
-- **Clear finished** removes finished agents from the list. Their cost remains in the totals.
+- **Clear finished**, under the *Finished* tab, removes finished agents from the list. Their cost remains in the totals.
 
 **Compact mode** folds the section into two rows of crabs, one for active and one for finished agents, with a badge for done, failed or stopped. The other sections are unaffected.
 

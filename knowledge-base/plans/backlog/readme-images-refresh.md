@@ -14,6 +14,7 @@ updated: 2026-10-11
 **Goal:** the images in `media/` still show the files section before 0.5–0.7: no filter buttons, breadcrumbs, search field, card tabs or folder state, and the settings without the *Version* group.
 
 **Approach:**
+- `media/crew.svg` still shows the savvy detective and a cap for general-purpose: draw the detective as general-purpose, drop savvy, use the type colours ([agent-type-look](../../decisions/agent-type-look.md)). The no-break legend and the blue `+` belong in `files.svg`.
 - Redraw `media/files.svg`, `media/settings.svg` and `media/panel.svg` from made-up data, never from a real session ([privacy-before-push](../../decisions/privacy-before-push.md)).
 - Match today's look: Client rows as text on the desktop, filter buttons, breadcrumbs with branch, card with *History / Changes* and *↗ Open*, coloured legend with its rule.
 - Do it after the active plans that change the look (folder counters, prompt band), so the pictures are drawn once.

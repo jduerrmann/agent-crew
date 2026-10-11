@@ -170,6 +170,8 @@ declare module 'claude-code' {
       update: CrewUpdate | null
       /** Every file under the root, for the tree's "All" filter: git's own list, or a bounded walk. */
       tree: { root: string; paths: string[] } | null
+      /** The colour each agent type outside Claude Code's own was given when first seen, by lower-case bare type. */
+      typeColors: Record<string, string>
     }
   }
 }

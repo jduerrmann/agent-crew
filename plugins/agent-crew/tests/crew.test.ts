@@ -112,6 +112,8 @@ test('records every spawn, not only savvy ones, and splits them into tabs', asyn
     expect(await ui.find({ key: tabs })).toBeDefined()
     expect(await hasRun(ui, 'a2')).toBe(true)
     expect(await hasRun(ui, 'a1')).toBe(false)
+    // Clearing the finished ones belongs to their tab.
+    expect(await ui.find({ key: 'clear' })).toBeUndefined()
     await showTab(ui, surface, 'done')
     expect(await hasRun(ui, 'a1')).toBe(true)
     expect(await ui.find({ key: 'clear' })).toBeDefined()
@@ -173,6 +175,29 @@ test('showUsage off hides the usage section', { options: { showUsage: false } },
   await start($)
   const ui = await mount($, 'terminal')
   expect(await ui.find({ text: /Kontext/ })).toBeUndefined()
+})
+
+test('every type its own colour and costume; savvy types wear the cap like any other', async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Allzweck', 'general-purpose')
+  await spawn($, 'Suchen', 'Explore')
+  await spawn($, 'Alpha', 'my-plugin:alpha')
+  await spawn($, 'Beta', 'beta')
+  await spawn($, 'Savvy', 'savvy-flow:savvy-heavy')
+  const ui = await mount($, 'desktop')
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('c-detective')
+  expect(drawn).toContain('c-pirate')
+  expect(drawn).toContain('c-cap')
+  expect(drawn).not.toContain('c-heavy')
+  // Built-in types keep theirs; the others take the free colours in the order they came.
+  for (const c of ['#378ADD', '#1D9E75', '#D85A30', '#C2477E', '#6F8F2E']) expect(drawn).toContain(c)
+  // A later agent of a known type, from another plugin even, wears the same colour: no new one is handed out.
+  await spawn($, 'Alpha zwei', 'other-plugin:Alpha')
+  await ui.unmount()
+  const again = JSON.stringify(await (await mount($, 'desktop')).drawn())
+  expect(again).not.toContain('#9C6644')
 })
 
 const spawnBg = ($: Engine, description: string) =>
@@ -1122,7 +1147,7 @@ test('the band above the prompt shows the crew, and a click on it opens the pane
     expect(text).toContain('1 Subagent aktiv')
     expect(text).toContain('1 fertig')
     // On the desktop the running agent walks as its crab; on the terminal it is a dot in its colour.
-    if (surface === 'desktop') expect(text).toContain('c-explore run flip')
+    if (surface === 'desktop') expect(text).toContain('c-pirate run flip')
     else expect(text).toContain('●')
     // The usage and progress lines are off by default.
     expect(text).not.toContain('Kontext')
@@ -1179,7 +1204,7 @@ test(
       if (surface === 'desktop') {
         // The pane's usage rings, and the crab with its bar beside it.
         expect(text).toContain('stroke-dasharray')
-        expect(text).toContain('c-explore run flip')
+        expect(text).toContain('c-pirate run flip')
       } else expect(text).toMatch(/[█▏▎▍▌▋▊▉░]{6}/)
       // /compact beside the usage runs the command, as the pane's button does.
       expect(text).toContain('/compact')
