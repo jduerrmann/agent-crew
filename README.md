@@ -64,7 +64,7 @@ claude plugin marketplace add jduerrmann/agent-crew
 claude plugin install agent-crew@agent-crew
 ```
 
-Then run `/crew`. By default the pane also opens by itself when the first subagent of a session starts.
+Then run `/crew`. By default the pane also opens by itself, once a session, when the first file is read or changed or the first subagent starts.
 
 ## Sections
 
@@ -137,9 +137,9 @@ A tree of every file the main chat or a subagent touched, plus every file git re
 - **Agents:** coloured dots show which agents touched a file.
 - **Details:** clicking a file shows its history (who read, changed or committed it, and when) and its diff against `HEAD`, or its content if it is untracked.
 - **Open:** double-clicking a file, or *Open* in its details, opens it in the app your system uses for that kind of file.
-- **Folders:** clicking a folder collapses or expands it; double-clicking it shows only that folder, with breadcrumbs above the tree to go back up. ⊟ collapses every folder in view (⊞ expands them again), ↻ reads git again.
+- **Folders:** folders start collapsed; clicking one expands or collapses it, and a search expands every folder that holds a hit. Double-clicking a folder shows only that folder, with breadcrumbs under the search line, next to the branch, to go back up. ⊞ expands every folder in view (⊟ collapses them again), ↻ reads git again.
 - **Conflicts:** when two agents change the same file within ten minutes, the file is marked and a notice appears. A commit resolves the mark.
-- **Changes only** hides files that were only read. The header shows the branch and how far it is ahead of or behind its upstream.
+- **Filters:** *Activity* (the default) shows every file the session's agents read or changed, plus what git reports as changed; *Changes* only what was changed; *All* every file under the root besides, untouched ones drawn quiet (git's own list, or a bounded walk outside a repository).
 
 ## Settings
 
@@ -164,6 +164,7 @@ Open the settings with `/crew-settings` or the *Settings* button at the top of t
 | `usageFiveHour` | `true` | 5-hour limit in the usage section. |
 | `usageWeek` | `true` | Weekly limits in the usage section. |
 | `autoOpen` | `true` | Open the pane when the first subagent of a session starts. |
+| `autoOpenFiles` | `true` | Open the pane when a file is first read or changed in a session, as filetree does. |
 | `language` | `auto` | `auto`, `de` or `en`. `auto` follows Claude Code's language setting, then the system locale. |
 | `notifyAgents` | `background` | Notify when agents end: `off`, `failures`, `background` (background agents and any failure) or `all`. |
 | `notifyVia` | `toast` | `toast` inside Claude Code, or `system` for the terminal's or operating system's notification. |

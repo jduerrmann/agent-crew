@@ -289,6 +289,13 @@ export function rowsUnder(entries: { key: string; label: string }[], folder: str
   return folder ? rows.map(r => (r.isDir ? { ...r, key: `dir:/${folder}${r.key.slice('dir:'.length)}` } : r)) : rows
 }
 
+/** The keys of the folders a label sits in, as `rowsUnder` keys them: what must be open to show it. */
+export function folderKeys(label: string, folder: string): string[] {
+  const segs = label.split('/').filter(Boolean).slice(0, -1)
+  const pre = folder ? [folder] : []
+  return segs.map((_, i) => `dir:/${[...pre, ...segs.slice(0, i + 1)].join('/')}`)
+}
+
 /** The tree path a folder row stands for: `dir:/src/auth` is `src/auth`. */
 export const folderOf = (key: string): string => key.replace(/^dir:\/?/, '')
 

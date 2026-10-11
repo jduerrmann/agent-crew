@@ -50,6 +50,9 @@ type Mounted = Awaited<ReturnType<typeof mount>>
 // The file tree draws its rows in Clients (`rows-a` above the open file, `rows-o`
 // the open one, `rows-b` below): a row is clicked where it sits.
 const clickRow = (ui: Mounted, client: string, y: number) => ui.pointer({ type: 'down', x: 4, y, button: 'left', in: client })
+const expandAll = async (ui: Mounted) => {
+  if (JSON.stringify(await ui.drawn()).includes('"key":"files-fold-all","label":"⊞"')) await ui.press({ key: 'files-fold-all' })
+}
 const hasRow = async (ui: Mounted, id: string) => JSON.stringify(await ui.drawn()).includes(`"id":"${id}"`)
 
 test('records every spawn, not only savvy ones, and splits them into tabs', async ($, on) => {
@@ -149,10 +152,11 @@ test('two agents changing one file raise a conflict, in a notice and in the tree
 
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
+    await expandAll(ui)
     expect(JSON.stringify(await ui.drawn())).toContain('⚠')
     await clickRow(ui, 'rows-a', 1)
     expect(await ui.find({ text: /Von mehreren Agenten geändert/ })).toBeDefined()
-    expect(await ui.find({ text: /Verlauf/ })).toBeDefined()
+    expect(await ui.find({ key: 'open-/work/src/app.ts' })).toBeDefined()
     await clock.advance(1000)
     await clickRow(ui, 'rows-o', 0)
     await clock.advance(1000)
@@ -289,6 +293,7 @@ test('the search line narrows the file tree, and Enter opens the first hit', asy
   await $.tool.call({ tool: 'Read', file_path: '/work/src/utils.ts' } as never)
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
+    await expandAll(ui)
     expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
     // A click gives the field the keys; it spans the frame and has no button.
     await ui.resize({ columns: 40, rows: 3, in: 'search' })
@@ -298,7 +303,7 @@ test('the search line narrows the file tree, and Enter opens the first hit', asy
     expect(await hasRow(ui, '/work/src/utils.ts')).toBe(true)
     expect(JSON.stringify(await ui.drawn())).toContain('1 Treffer')
     await ui.key({ key: 'return', in: 'search' })
-    expect(await ui.find({ text: /Verlauf/ })).toBeDefined()
+    expect(await ui.find({ key: 'open-/work/src/utils.ts' })).toBeDefined()
     // The × at the field's right end clears it.
     await ui.pointer({ type: 'down', x: 38, y: 1, button: 'left', in: 'search' })
     expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
@@ -312,6 +317,7 @@ test('a freshly touched file shimmers on the desktop', async ($, on) => {
   await start($)
   await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'a', new_string: 'b' } as never)
   const ui = await mount($, 'desktop')
+  await expandAll(ui)
   const drawn = JSON.stringify(await ui.drawn())
   expect(drawn).toContain('filerows.tsx')
   expect(drawn).toContain('"sh":"write"')
@@ -337,6 +343,7 @@ test('grep -n and sed -n count the file they read', async ($, on) => {
   await $.tool.call({ tool: 'Bash', command: "sed -n '1,40p' src/utils.ts" } as never)
   await $.tool.call({ tool: 'Bash', command: 'head -n 20 README.md' } as never)
   const ui = await mount($, 'terminal')
+  await expandAll(ui)
   expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
   expect(await hasRow(ui, '/work/src/utils.ts')).toBe(true)
   expect(await hasRow(ui, '/work/README.md')).toBe(true)
@@ -383,6 +390,7 @@ test("a press opens a file's card, a double press the file itself", async ($, on
   await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
+    await expandAll(ui)
     await clickRow(ui, 'rows-a', 1)
     expect(await ui.find({ key: 'open-/work/src/app.ts' })).toBeDefined()
     const before = runs.length
@@ -403,12 +411,14 @@ test('a folder shuts and opens on a press', async ($, on) => {
   await $.tool.call({ tool: 'Read', file_path: '/work/README.md' } as never)
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    await clickRow(ui, 'rows-a', 0)
+    // Folders start shut.
     expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
     expect(await hasRow(ui, '/work/README.md')).toBe(true)
-    await clock.advance(1000)
     await clickRow(ui, 'rows-a', 0)
     expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+    await clock.advance(1000)
+    await clickRow(ui, 'rows-a', 0)
+    expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
     await clock.advance(1000)
   }
 })
@@ -427,11 +437,11 @@ test('the search field loses its focus when the prompt or another button takes t
   expect(await isFocused()).toBe(false)
   await ui.key({ key: 'a', in: 'search' })
   expect(await isFocused()).toBe(true)
-  await ui.press({ key: 'files-filter' })
+  await ui.press({ key: 'files-filter-changed' })
   expect(await isFocused()).toBe(false)
 })
 
-test('a double press enters a folder, the breadcrumbs lead back, ⊟ shuts them all', async ($, on) => {
+test('a double press enters a folder, the breadcrumbs lead back, ⊞ opens them all', async ($, on) => {
   const { clock } = engine(on)
   await start($)
   await $.tool.call({ tool: 'Read', file_path: '/work/src/auth/tokens.ts' } as never)
@@ -447,15 +457,70 @@ test('a double press enters a folder, the breadcrumbs lead back, ⊟ shuts them 
     // The breadcrumbs: a heading under the search line, each step a link.
     const crumbs = JSON.stringify(await ui.drawn())
     expect(crumbs).toContain('#### [⌂ work](file:///work) › **src**')
-    // ⊟ shuts every folder in view; ⊞ opens them again.
-    await ui.press({ key: 'files-shut-all' })
+    // Its folders start shut: ⊞ opens every one in view, ⊟ shuts them again.
     expect(await hasRow(ui, '/work/src/auth/tokens.ts')).toBe(false)
-    await ui.press({ key: 'files-shut-all' })
+    await ui.press({ key: 'files-fold-all' })
     expect(await hasRow(ui, '/work/src/auth/tokens.ts')).toBe(true)
+    await ui.press({ key: 'files-fold-all' })
+    expect(await hasRow(ui, '/work/src/auth/tokens.ts')).toBe(false)
     await ui.press({ key: 'files-crumbs', link: { href: 'file:///work' } })
     expect(await hasRow(ui, '/work/README.md')).toBe(true)
     // Back at the top the main folder stays, as the current step.
     expect(JSON.stringify(await ui.drawn())).toContain('#### **⌂ work**')
     await clock.advance(1000)
   }
+})
+
+test("an open file's card without changes shows its history alone, no tabs", async ($, on) => {
+  engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    await expandAll(ui)
+    await clickRow(ui, 'rows-a', 1)
+    expect(await ui.find({ key: 'ftab-history' })).toBeUndefined()
+    expect(await ui.find({ key: 'ftab-changes' })).toBeUndefined()
+    expect(await ui.find({ text: /^Verlauf$/ })).toBeUndefined()
+    expect(await ui.find({ text: /gelesen/ })).toBeDefined()
+    expect(await ui.find({ key: 'open-/work/src/app.ts' })).toBeDefined()
+  }
+})
+
+test('the tree opens the pane on the first file read, once', async ($, on) => {
+  const { opened } = engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/work/README.md' } as never)
+  expect(opened.filter(id => id === 'agent-crew')).toEqual(['agent-crew'])
+})
+
+test('autoOpenFiles off keeps the pane shut on file reads', { options: { autoOpenFiles: false } }, async ($, on) => {
+  const { opened } = engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  expect(opened).toEqual([])
+})
+
+test('the filters: activity by default, changes alone, or every file under the root', async ($, on) => {
+  const { clock } = engine(on)
+  const entry = (name: string, kind: 'file' | 'dir') => ({ name, kind, size: 1, mtimeMs: 0, isLink: false })
+  // The host spells the path its own way (C:\work on Windows): compare the tail.
+  const listing: Record<string, ReturnType<typeof entry>[]> = { '/work': [entry('src', 'dir'), entry('notes.md', 'file'), entry('node_modules', 'dir')], '/work/src': [entry('app.ts', 'file')] }
+  on('fs.list', (_$, e) => ({ value: listing[(e as { path: string }).path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')] ?? [] }) as never)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  const ui = await mount($, 'terminal')
+  await expandAll(ui)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  expect(await hasRow(ui, '/work/notes.md')).toBe(false)
+  await ui.press({ key: 'files-filter-changed' })
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
+  await ui.press({ key: 'files-filter-all' })
+  await clock.advance(10)
+  expect(await hasRow(ui, '/work/notes.md')).toBe(true)
+  expect(await hasRow(ui, '/work/node_modules')).toBe(false)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  await ui.press({ key: 'files-filter-activity' })
+  expect(await hasRow(ui, '/work/notes.md')).toBe(false)
 })

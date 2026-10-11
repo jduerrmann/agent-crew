@@ -93,6 +93,12 @@
       "title": "Open the panel on the first subagent",
       "description": "Opens the agents panel once per session when the first subagent starts",
       "default": true
+    },
+    "autoOpenFiles": {
+      "type": "boolean",
+      "title": "Open the panel on the first file activity",
+      "description": "Opens the panel once per session when a file is first read or changed, as filetree does",
+      "default": true
     }
   },
   "license": "PolyForm-Noncommercial-1.0.0"

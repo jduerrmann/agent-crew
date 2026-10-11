@@ -6,7 +6,7 @@ import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewPanel, Crew
 import { CLAY, FONT, crab, fitText, svg, textWidth, xml } from './crab'
 import type { FileRowSpec, FileRowsProps, Seg } from './filerows'
 import type { SearchBoxProps } from './searchbox'
-import { applyNumstat, folderOf, inside, keyOf, mayChange, openCommand, parseStatus, posix, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
+import { applyNumstat, folderKeys, folderOf, inside, keyOf, mayChange, openCommand, parseStatus, posix, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
 import type { TreeRow } from './files'
 import type { Tab, TabsProps } from './tabs'
 
@@ -23,7 +23,7 @@ const PANEL_DEFAULT: CrewPanel = {
   expanded: [],
   isCompact: false,
   hasAutoOpened: false,
-  fileFilter: 'all',
+  fileFilter: 'activity',
   isFilesCollapsed: false,
   isTimelineOpen: true,
 }
@@ -37,6 +37,7 @@ const diff = atom({ plugin: 'agent-crew', key: 'diff' } as const, null)
 const warned = atom({ plugin: 'agent-crew', key: 'warned' } as const, {})
 const settingsRev = atom({ plugin: 'agent-crew', key: 'settingsRev' } as const, 0)
 const mainCost = atom({ plugin: 'agent-crew', key: 'mainCost' } as const, { cost: 0, tokens: 0 })
+const tree = atom({ plugin: 'agent-crew', key: 'tree' } as const, null)
 
 // The plugin's options, set by register on every (re)load.
 let opts: Record<string, unknown> = {}
@@ -99,10 +100,9 @@ const STRINGS = {
     nothingYet: 'Noch keine Aktion aufgezeichnet.',
     touched: (r: number, w: number) => `Dateien: ${r} gelesen, ${w} geändert`,
     files: 'Dateien',
-    allFiles: 'Alle',
-    changedOnly: 'Nur Änderungen',
+    fileFilters: { activity: 'Aktivität', changed: 'Änderungen', all: 'Alle' },
     noFiles: 'Noch keine Dateien gelesen oder geändert.',
-    legend: '◉ gelesen   ✎ geändert   ✓ committet',
+    legend: { read: 'gelesen', write: 'geändert', commit: 'committet' },
     more: (n: number) => `… ${n} weitere`,
     main: 'Hauptchat',
     totalsTitle: 'Kosten',
@@ -130,6 +130,7 @@ const STRINGS = {
     focusOn: 'Seine Dateien hervorheben',
     focusOff: 'Hervorhebung aufheben',
     history: 'Verlauf',
+    noHistory: 'Noch nichts aufgezeichnet.',
     openIt: 'Öffnen',
     openFailed: (name: string) => `${name} ließ sich nicht öffnen`,
     histKind: { read: 'gelesen', write: 'geändert', commit: 'committet' },
@@ -174,10 +175,9 @@ const STRINGS = {
     nothingYet: 'No action recorded yet.',
     touched: (r: number, w: number) => `Files: ${r} read, ${w} changed`,
     files: 'Files',
-    allFiles: 'All',
-    changedOnly: 'Changes only',
+    fileFilters: { activity: 'Activity', changed: 'Changes', all: 'All' },
     noFiles: 'No files read or changed yet.',
-    legend: '◉ read   ✎ changed   ✓ committed',
+    legend: { read: 'read', write: 'changed', commit: 'committed' },
     more: (n: number) => `… ${n} more`,
     main: 'main chat',
     totalsTitle: 'Cost',
@@ -205,6 +205,7 @@ const STRINGS = {
     focusOn: 'Highlight its files',
     focusOff: 'Clear highlight',
     history: 'History',
+    noHistory: 'Nothing recorded yet.',
     openIt: 'Open',
     openFailed: (name: string) => `Could not open ${name}`,
     histKind: { read: 'read', write: 'changed', commit: 'committed' },
@@ -645,6 +646,7 @@ async function touch($: EngineInterface, paths: string[], kind: 'read' | 'write'
     return list.length > MAX_FILES ? [...list].sort((a, b) => b.lastAt - a.lastAt).slice(0, MAX_FILES) : list
   })
   await update($, now, () => at)
+  await autoOpenPane($, 'files')
   if (opts.warnConflicts !== false) {
     for (const c of conflicts) {
       const names = await Promise.all(c.agents.map(a => agentName($, a)))
@@ -672,6 +674,11 @@ async function loadDiff($: EngineInterface, key: string): Promise<void> {
     } catch {
       text = ''
     }
+  }
+  // The hunks alone: git's header (diff --git, index, ---/+++) says nothing the card does not.
+  if (format === 'diff') {
+    const hunk = text.indexOf('\n@@')
+    if (hunk >= 0) text = text.slice(hunk + 1)
   }
   const next = text ? { key, text: text.slice(0, MAX_DIFF), format } : null
   if (JSON.stringify(await read($, diff)) !== JSON.stringify(next)) await update($, diff, () => next)
@@ -704,6 +711,7 @@ async function syncGit($: EngineInterface): Promise<void> {
     const up = await runGit($, cwd, ['rev-parse', '--show-cdup'])
     if (up === null) {
       if ((await read($, git)) !== null) await update($, git, () => null)
+      if ((await readPanel($)).fileFilter === 'all') await syncTree($)
       return
     }
     const root = up.trim() ? resolve(cwd, up.trim(), home) : cwd
@@ -748,8 +756,10 @@ async function syncGit($: EngineInterface): Promise<void> {
     if (JSON.stringify(prev) !== JSON.stringify(next)) await update($, git, () => next)
     // The open file's diff follows the tree, also when an edit leaves its
     // status and line counts as they were.
-    const open = (await readPanel($)).openFile
-    if (open) await loadDiff($, open)
+    const p = await readPanel($)
+    if (p.openFile) await loadDiff($, p.openFile)
+    // The "All" filter's list follows too: new and deleted files.
+    if (p.fileFilter === 'all') await syncTree($)
   } finally {
     gitBusy = false
     if (gitQueued) {
@@ -757,6 +767,43 @@ async function syncGit($: EngineInterface): Promise<void> {
       $.clock.after(300, () => void syncGit($).catch(() => undefined))
     }
   }
+}
+
+// Every file under the root, for the tree's "All" filter: git's own list where
+// there is a repository (tracked and untracked, what it ignores left out), else a
+// walk that skips hidden folders and the usual build and dependency ones.
+const MAX_TREE = 4000
+const MAX_WALK_DEPTH = 6
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', 'venv'])
+
+async function syncTree($: EngineInterface): Promise<void> {
+  const g = await read($, git)
+  const root = g?.root ?? posix(await $.session.cwd())
+  let paths: string[] = []
+  if (g) {
+    const out = await runGit($, root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
+    paths = (out ?? '').split('\0').filter(Boolean).slice(0, MAX_TREE).map(rel => `${root}/${rel}`)
+  } else {
+    let level = [root]
+    for (let depth = 0; depth < MAX_WALK_DEPTH && level.length && paths.length < MAX_TREE; depth++) {
+      const next: string[] = []
+      for (const dir of level) {
+        let entries: Awaited<ReturnType<EngineInterface['fs']['list']>> = []
+        try {
+          entries = await $.fs.list(dir)
+        } catch {
+          continue
+        }
+        for (const e of entries) {
+          if (e.kind === 'dir' && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name)) next.push(`${dir}/${e.name}`)
+          else if (e.kind === 'file' && paths.length < MAX_TREE) paths.push(`${dir}/${e.name}`)
+        }
+      }
+      level = next
+    }
+  }
+  const next = { root, paths }
+  if (JSON.stringify(await read($, tree)) !== JSON.stringify(next)) await update($, tree, () => next)
 }
 
 // Writes and commands settle a moment before git sees them.
@@ -807,6 +854,17 @@ async function storeUsage(
     limits: limits.map(l => ({ kind: l.kind, percent: l.percentUsed, resetsAt: l.resetsAt })),
   }
   if (JSON.stringify(await read($, usage)) !== JSON.stringify(next)) await update($, usage, () => next)
+}
+
+// The pane opens by itself once a session: on the first subagent (`autoOpen`),
+// or on the first file read or changed (`autoOpenFiles`), whichever comes first.
+async function autoOpenPane($: EngineInterface, cause: 'agents' | 'files'): Promise<void> {
+  if ((cause === 'agents' ? opts.autoOpen : opts.autoOpenFiles) === false) return
+  if ((await readPanel($)).hasAutoOpened) return
+  await setPanel($, () => ({ hasAutoOpened: true }))
+  if ((await $.ui.panes()).some(p => p.id === PANE)) return
+  void $.ui.open({ id: PANE, title: tr().pane }).catch(() => undefined)
+  void syncGit($).catch(() => undefined)
 }
 
 async function togglePane($: EngineInterface): Promise<boolean> {
@@ -1111,17 +1169,23 @@ type FileView = {
   label: string
   file?: CrewFile
   gitFile?: CrewGitFile
+  /** An untouched file's path, from the "All" filter's list. */
+  path?: string
 }
+
+const UNTOUCHED_COLOR = '#8a8a86'
 
 const isChanged = (v: FileView): boolean => Boolean(v.gitFile || (v.file && (v.file.writes > 0 || v.file.commit)))
 
 const fileColor = (v: FileView): string => {
+  if (!v.file && !v.gitFile) return UNTOUCHED_COLOR
   if (v.gitFile || v.file?.lastKind === 'write') return WRITE_COLOR
   if (v.file?.commit) return COMMIT_COLOR
   return READ_COLOR
 }
 
 const fileGlyph = (v: FileView): string => {
+  if (!v.file && !v.gitFile) return '·'
   if (v.gitFile?.code.includes('?')) return '+'
   if (v.gitFile?.code.includes('D')) return '−'
   if (v.gitFile || v.file?.lastKind === 'write') return '✎'
@@ -1137,7 +1201,10 @@ const gitBadge = (v: FileView): string => {
   return g.add || g.del ? `+${g.add} −${g.del}` : g.code.trim()
 }
 
-const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: 'all' | 'changed'): FileView[] => {
+// The tree's files by its filter: `activity`, what the session's agents read and
+// changed (and what git reports as changed); `changed`, the changes alone;
+// `all`, every file under the root besides, untouched ones drawn quiet.
+const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: CrewPanel['fileFilter'], everyPath: readonly string[] = []): FileView[] => {
   const map = new Map<string, FileView>()
   const label = (path: string) => shortPath(path, base)
   for (const f of list) map.set(f.key, { key: f.key, label: label(f.path), file: f })
@@ -1148,9 +1215,17 @@ const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: 'a
       else map.set(key, { key, label: label(gf.path), gitFile: gf })
     }
   }
+  if (filter === 'all') {
+    for (const path of everyPath) {
+      const key = keyOf(path, fold)
+      if (!map.has(key)) map.set(key, { key, label: label(path), path })
+    }
+  }
   const out = [...map.values()]
   return filter === 'changed' ? out.filter(isChanged) : out
 }
+
+const isUntouched = (v: FileView): boolean => !v.file && !v.gitFile
 
 const MAX_FILE_ROWS = 80
 
@@ -1200,10 +1275,13 @@ async function openFirstHit($: EngineInterface, text: string): Promise<void> {
   if (!q) return
   const g = await read($, git)
   const p = await readPanel($)
-  const views = underFolder(fileViews(await read($, files), g, g?.root ?? posix(await $.session.cwd()), p.fileFilter), p.fileRoot ?? '')
+  const root = p.fileRoot ?? ''
+  const views = underFolder(fileViews(await read($, files), g, g?.root ?? posix(await $.session.cwd()), p.fileFilter, (await read($, tree))?.paths), root)
   const hit = treeRows(views.filter(v => v.label.toLowerCase().includes(q)).map(v => ({ key: v.key, label: v.label }))).find(r => !r.isDir)
   if (!hit) return
-  await setPanel($, () => ({ openFile: hit.key, fileQuery: text }))
+  // Its folders open with it, so the card stays in sight once the query is cleared.
+  const label = views.find(v => v.key === hit.key)?.label ?? ''
+  await setPanel($, q => ({ openFile: hit.key, fileQuery: text, openDirs: [...new Set([...(q.openDirs ?? []), ...folderKeys(label, root)])] }))
   await loadDiff($, hit.key)
 }
 
@@ -1223,10 +1301,10 @@ async function pressRow($: EngineInterface, id: string): Promise<void> {
   lastPress = { key: isDouble ? '' : id, at }
   if (id.startsWith('dir:')) {
     await setPanel($, q => {
-      const shut = q.shutDirs ?? []
-      // The first press of the two shut the folder: entering it opens it again.
-      if (isDouble) return { fileRoot: folderOf(id), shutDirs: shut.filter(k => k !== id), openFile: undefined }
-      return { shutDirs: shut.includes(id) ? shut.filter(k => k !== id) : [...shut, id] }
+      const open = q.openDirs ?? []
+      // The first press of the two opened the folder: entering it closes it again.
+      if (isDouble) return { fileRoot: folderOf(id), openDirs: open.filter(k => k !== id), openFile: undefined }
+      return { openDirs: open.includes(id) ? open.filter(k => k !== id) : [...open, id] }
     })
     return
   }
@@ -1234,7 +1312,8 @@ async function pressRow($: EngineInterface, id: string): Promise<void> {
     await toggleCard($, id)
     return
   }
-  const path = (await read($, files)).find(f => f.key === id)?.path ?? (await read($, git))?.files[id]?.path
+  const path =
+    (await read($, files)).find(f => f.key === id)?.path ?? (await read($, git))?.files[id]?.path ?? (await read($, tree))?.paths.find(x => keyOf(x, fold) === id)
   if (path) await openFile($, path)
 }
 
@@ -1301,6 +1380,7 @@ const FIELDS: readonly Field[] = [
   { key: 'usageFiveHour', group: 'usage', default: true },
   { key: 'usageWeek', group: 'usage', default: true },
   { key: 'autoOpen', group: 'view', default: true },
+  { key: 'autoOpenFiles', group: 'view', default: true },
   { key: 'language', group: 'view', default: 'auto', choices: ['auto', 'de', 'en'] },
   { key: 'notifyAgents', group: 'notify', default: 'background', choices: ['off', 'failures', 'background', 'all'] },
   { key: 'notifyVia', group: 'notify', default: 'toast', choices: ['toast', 'system'] },
@@ -1327,7 +1407,8 @@ const FIELD_TEXT = {
       usageContext: ['Kontext', 'Wie voll das Kontextfenster der Session ist'],
       usageFiveHour: ['5-Stunden-Limit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
       usageWeek: ['Wochenlimit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
-      autoOpen: ['Automatisch öffnen', 'Das Panel öffnet sich beim ersten Subagenten einer Session'],
+      autoOpen: ['Bei Subagenten öffnen', 'Das Panel öffnet sich, wenn der erste Subagent einer Session startet'],
+      autoOpenFiles: ['Bei Dateiaktivität öffnen', 'Das Panel öffnet sich, wenn in einer Session zum ersten Mal eine Datei gelesen oder geändert wird'],
       language: ['Sprache', 'Automatisch folgt der Sprache von Claude Code, dann dem System'],
       notifyAgents: ['Agent fertig', 'Wann eine Meldung kommt, wenn ein Subagent endet'],
       notifyVia: ['Meldungen als', 'In Claude Code oder als Benachrichtigung von Terminal bzw. System'],
@@ -1358,7 +1439,8 @@ const FIELD_TEXT = {
       usageContext: ['Context', 'How full the session’s context window is'],
       usageFiveHour: ['5-hour limit', 'Use so far and time until it resets'],
       usageWeek: ['Weekly limit', 'Use so far and time until it resets'],
-      autoOpen: ['Open automatically', 'The panel opens on the first subagent of a session'],
+      autoOpen: ['Open on subagents', 'The panel opens when the first subagent of a session starts'],
+      autoOpenFiles: ['Open on file activity', 'The panel opens when a file is first read or changed in a session'],
       language: ['Language', 'Automatic follows Claude Code’s language, then the system'],
       notifyAgents: ['Agent finished', 'When a notice comes as a subagent ends'],
       notifyVia: ['Notices as', 'Inside Claude Code, or as the terminal’s or system’s notification'],
@@ -1575,10 +1657,7 @@ export const register: Register = (on, options) => {
 
     const p = await readPanel($)
     if (p.tab !== 'active') await setPanel($, () => ({ tab: 'active' }))
-    if (opts.autoOpen !== false && !p.hasAutoOpened) {
-      await setPanel($, () => ({ hasAutoOpened: true }))
-      void $.ui.open({ id: PANE, title: tr().pane })
-    }
+    await autoOpenPane($, 'agents')
     return started
   })
 
@@ -1970,11 +2049,16 @@ export const register: Register = (on, options) => {
     // A folder entered by a double press narrows it to that folder, labels relative.
     const query = (p.fileQuery ?? '').trim().toLowerCase()
     const root = p.fileRoot ?? ''
-    const allViews = underFolder(fileViews(fileList, g, base, p.fileFilter), root)
+    const everyFile = await read($, tree)
+    if (p.fileFilter === 'all' && !everyFile) $.clock.after(1, () => void syncTree($).catch(() => undefined))
+    const allViews = underFolder(fileViews(fileList, g, base, p.fileFilter, everyFile?.paths), root)
     const views = query ? allViews.filter(v => v.label.toLowerCase().includes(query)) : allViews
     const treeAll = rowsUnder(views.map(v => ({ key: v.key, label: v.label })), root)
     const dirKeys = treeAll.filter(r => r.isDir).map(r => r.key)
-    const isAllShut = dirKeys.length > 0 && dirKeys.every(k => (p.shutDirs ?? []).includes(k))
+    // Folders are shut until opened; a search opens every one that holds a hit.
+    const openDirs = new Set(p.openDirs ?? [])
+    const shut = new Set(query ? [] : dirKeys.filter(k => !openDirs.has(k)))
+    const isAllShut = dirKeys.length > 0 && dirKeys.every(k => shut.has(k))
     const branch = g ? `⑂ ${g.branch || 'HEAD'}${g.ahead ? ` ↑${g.ahead}` : ''}${g.behind ? ` ↓${g.behind}` : ''}` : ''
     const focusRun = p.focusAgent ? byAgent.get(p.focusAgent) : undefined
     const filesHeader = (
@@ -1985,12 +2069,19 @@ export const register: Register = (on, options) => {
           plain
           onPress={() => setPanel($, q => ({ isFilesCollapsed: !q.isFilesCollapsed }))}
         />
-        <Button
-          key="files-filter"
-          label={p.fileFilter === 'all' ? s.changedOnly : s.allFiles}
-          plain
-          onPress={() => setPanel($, q => ({ fileFilter: q.fileFilter === 'all' ? 'changed' : 'all' }))}
-        />
+        {(['activity', 'changed', 'all'] as const).map(id => (
+          <Button
+            key={`files-filter-${id}`}
+            label={s.fileFilters[id]}
+            plain
+            dimColor={p.fileFilter !== id}
+            onPress={async () => {
+              await setPanel($, () => ({ fileFilter: id }))
+              // A press's own work ends with it: the list is read in a dispatch of its own.
+              if (id === 'all') $.clock.after(1, () => void syncTree($).catch(() => undefined))
+            }}
+          />
+        ))}
         {focusRun && (
           <Button key="focus-clear" plain onPress={() => setPanel($, () => ({ focusAgent: undefined }))}>
             <Text color={colorOf(focusRun)}>◎ {oneLine(focusRun.description || typeLabel(focusRun), 30)}</Text> ✕
@@ -1999,14 +2090,14 @@ export const register: Register = (on, options) => {
         <Box flexGrow={1} />
         {!p.isFilesCollapsed && dirKeys.length > 0 && (
           <Button
-            key="files-shut-all"
+            key="files-fold-all"
             label={isAllShut ? '⊞' : '⊟'}
             plain
             dimColor
             onPress={() =>
               setPanel($, q => {
-                const shut = (q.shutDirs ?? []).filter(k => !dirKeys.includes(k))
-                return { shutDirs: isAllShut ? shut : [...shut, ...dirKeys] }
+                const open = (q.openDirs ?? []).filter(k => !dirKeys.includes(k))
+                return { openDirs: isAllShut ? [...open, ...dirKeys] : open }
               })
             }
           />
@@ -2076,13 +2167,24 @@ export const register: Register = (on, options) => {
     const desktopW = Math.max(220, Math.min(900, ((e.props.bodyColumns || 40) - FRAME_COLS) * 8 - 8))
 
     // One file row is one Button: a press opens its history and diff beneath it.
-    const fileTree = visibleRows(treeAll, new Set(p.shutDirs ?? []))
+    const fileTree = visibleRows(treeAll, shut)
     const viewByKey = new Map(views.map(v => [v.key, v]))
     const openDiff = await read($, diff)
+    // An open file's card: its history and its changes against HEAD (the text
+    // of a new file) in two tabs, with Open beside them; a file git sees no
+    // change in has its history alone, no tabs and no heading. The tab chosen stays for the
+    // next file; absent a choice, the changes.
     const fileDetails = (v: FileView, pad: string) => {
-      const hist = [...(v.file?.history ?? [])].reverse().slice(0, 8)
+      const hist = [...(v.file?.history ?? [])].reverse()
       const d = openDiff && openDiff.key === v.key ? openDiff : null
       const Code = 'Code' in ui ? ui.Code : undefined
+      const hasChanges = Boolean(d || v.gitFile)
+      const tab = !hasChanges || p.fileTab === 'history' ? 'history' : 'changes'
+      const badge = gitBadge(v)
+      const tabs = [
+        { id: 'history' as const, label: s.history, count: hist.length ? String(hist.length) : '' },
+        ...(hasChanges ? [{ id: 'changes' as const, label: d?.format === 'source' ? s.newFile : s.changes, count: badge }] : []),
+      ]
       return (
         <Box key={`fd-${v.key}`} flexDirection="column" marginTop={1}>
           {v.file?.conflict && v.file.conflict.length > 1 && (
@@ -2092,37 +2194,45 @@ export const register: Register = (on, options) => {
             </Text>
           )}
           <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-            <Text bold dimColor>
-              {pad}
-              {hist.length > 0 ? s.history : ''}
-            </Text>
+            {hasChanges ? (
+              <Box flexDirection="row" alignItems="center" gap={1}>
+                {tabs.map(t => (
+                  <Button
+                    key={`ftab-${t.id}`}
+                    label={t.count ? `${t.label} ${t.count}` : t.label}
+                    variant={tab === t.id ? 'primary' : 'secondary'}
+                    onPress={() => setPanel($, () => ({ fileTab: t.id }))}
+                  />
+                ))}
+              </Box>
+            ) : (
+              <Box />
+            )}
             <Button key={`open-${v.key}`} label={`↗ ${s.openIt}`} variant="secondary" onPress={() => openFile($, v.file?.path ?? v.gitFile?.path ?? v.key)} />
           </Box>
-          {hist.map((ev, i) => (
-            <Text key={`h-${v.key}-${i}`} wrap="truncate-end">
-              {pad}
-              <Text dimColor>{fmtAgo(at - ev.at).padStart(4)} </Text>
-              <Text color={ev.kind === 'read' ? READ_COLOR : ev.kind === 'write' ? WRITE_COLOR : COMMIT_COLOR}>{s.histKind[ev.kind]}</Text>
-              <Text dimColor> · </Text>
-              <Text color={agentColor(ev.agent, byAgent)}>
-                {ev.agent === 'main' ? s.main : ev.agent === 'git' ? 'git' : byAgent.get(ev.agent)?.description || ev.agent.slice(0, 8)}
+          <Box flexDirection="column" marginTop={1}>
+            {tab === 'history' &&
+              hist.map((ev, i) => (
+                <Text key={`h-${v.key}-${i}`} wrap="truncate-end">
+                  {pad}
+                  <Text dimColor>{fmtAgo(at - ev.at).padStart(4)} </Text>
+                  <Text color={ev.kind === 'read' ? READ_COLOR : ev.kind === 'write' ? WRITE_COLOR : COMMIT_COLOR}>{s.histKind[ev.kind]}</Text>
+                  <Text dimColor> · </Text>
+                  <Text color={agentColor(ev.agent, byAgent)}>
+                    {ev.agent === 'main' ? s.main : ev.agent === 'git' ? 'git' : byAgent.get(ev.agent)?.description || ev.agent.slice(0, 8)}
+                  </Text>
+                </Text>
+              ))}
+            {tab === 'history' && hist.length === 0 && <Text dimColor>{s.noHistory}</Text>}
+            {tab === 'changes' && d && Code && <Code key={`code-${v.key}`} source={d.text} format={d.format} path={v.label} wrap="truncate-end" />}
+            {tab === 'changes' && d && !Code && <Text>{d.text.slice(0, 2000)}</Text>}
+            {tab === 'changes' && !d && (
+              <Text dimColor>
+                {pad}
+                {s.noDiff}
               </Text>
-            </Text>
-          ))}
-          {d && (
-            <Text bold dimColor>
-              {pad}
-              {d.format === 'source' ? s.newFile : s.changes}
-            </Text>
-          )}
-          {d && Code && <Code key={`code-${v.key}`} source={d.text} format={d.format} path={v.label} wrap="truncate-end" />}
-          {d && !Code && <Text>{d.text.slice(0, 2000)}</Text>}
-          {!d && v.gitFile && !v.gitFile.code.includes('?') && (
-            <Text dimColor>
-              {pad}
-              {s.noDiff}
-            </Text>
-          )}
+            )}
+          </Box>
         </Box>
       )
     }
@@ -2152,7 +2262,7 @@ export const register: Register = (on, options) => {
             left: [
               { t: indent },
               { t: `${fileGlyph(v)} `, c: color, dim: isDim, sh: tone },
-              { t: r.name, b: isFresh || isOpen, c: isOpen ? color : undefined, dim: isDim, sh: tone },
+              { t: r.name, b: isFresh || isOpen, c: isOpen ? color : undefined, dim: isDim || isUntouched(v), sh: tone },
             ],
             right,
           },
@@ -2169,7 +2279,6 @@ export const register: Register = (on, options) => {
       ) : null
 
     // Without a Client: a Button a row, the same presses.
-    const shut = new Set(p.shutDirs ?? [])
     const buttonRow = (r: TreeRow) => {
       if (r.isDir)
         return (
@@ -2213,8 +2322,10 @@ export const register: Register = (on, options) => {
     const rowsOf = (key: string, rows: TreeRow[], base = 0) => (Client ? rowsClient(key, rows, base) : rows.map(buttonRow))
     const openCard =
       openRow && openView ? (
-        <Box key="f-open" {...card((openView.file?.conflict?.length ?? 0) > 1 ? '#D0453F' : fileColor(openView), openRow.depth)}>
-          {rowsOf('rows-o', [openRow], openRow.depth)}
+        // The card spans the tree's width; only its row keeps the tree's indent, one
+        // step less for the card's border and padding, so the name stays in line.
+        <Box key="f-open" {...card((openView.file?.conflict?.length ?? 0) > 1 ? '#D0453F' : fileColor(openView), 0)}>
+          {rowsOf('rows-o', [openRow], Math.min(1, openRow.depth))}
           {fileDetails(openView, '')}
         </Box>
       ) : null
@@ -2225,7 +2336,31 @@ export const register: Register = (on, options) => {
         {!p.isFilesCollapsed && openCard}
         {!p.isFilesCollapsed && rowsOf('rows-b', below)}
         {!p.isFilesCollapsed && fileTree.length > MAX_FILE_ROWS && <Text dimColor>{s.more(fileTree.length - MAX_FILE_ROWS)}</Text>}
-        {!p.isFilesCollapsed && views.length > 0 && <Text dimColor>{s.legend}</Text>}
+        {!p.isFilesCollapsed && views.length > 0 && (
+          // Set off from the tree by a rule; each sign in the colour it marks.
+          <Box key="files-legend" flexDirection="column" marginTop={1}>
+            {/* Cut by the box, not truncated: a truncated Text ends in an ellipsis. */}
+            <Box height={1} overflow="hidden">
+              <Text dimColor wrap="wrap">
+                {'─'.repeat(240)}
+              </Text>
+            </Box>
+            <Text>
+              {(
+                [
+                  ['◉', READ_COLOR, s.legend.read],
+                  ['✎', WRITE_COLOR, s.legend.write],
+                  ['✓', COMMIT_COLOR, s.legend.commit],
+                ] as const
+              ).map(([sign, color, label], i) => (
+                <Text key={`lg-${i}`}>
+                  {i ? '   ' : ''}
+                  <Text color={color}>{sign}</Text> <Text color={color}>{label}</Text>
+                </Text>
+              ))}
+            </Text>
+          </Box>
+        )}
       </Box>
     )
 

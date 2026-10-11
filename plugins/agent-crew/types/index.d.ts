@@ -52,12 +52,15 @@ export type CrewPanel = {
   expanded: string[]
   isCompact: boolean
   hasAutoOpened: boolean
-  fileFilter: 'all' | 'changed'
+  /** What the file tree shows: what the session's agents read and changed, the changes alone, or every file. */
+  fileFilter: 'activity' | 'changed' | 'all'
   isFilesCollapsed: boolean
   /** The file whose history and diff are open. */
   openFile?: string
-  /** Folders of the file tree shut by a press. */
-  shutDirs?: string[]
+  /** The tab of an open file's card: its history or its changes. */
+  fileTab?: 'history' | 'changes'
+  /** Folders of the file tree opened by a press; every other one is shut. */
+  openDirs?: string[]
   /** The folder the file tree shows (`src/auth`), entered by a double press; absent, the whole tree. */
   fileRoot?: string
   /** What the search line above the file tree holds. */
@@ -145,6 +148,8 @@ declare module 'claude-code' {
       settingsRev: number
       /** The main chat's own requests since the mod loaded: estimated cost and tokens. */
       mainCost: { cost: number; tokens: number; cache?: number }
+      /** Every file under the root, for the tree's "All" filter: git's own list, or a bounded walk. */
+      tree: { root: string; paths: string[] } | null
     }
   }
 }
