@@ -15,7 +15,7 @@ updated: 2026-10-11
 **Decision:**
 - **Estimate:** `barOf` in `hooks/register.tsx` computes `0.9 · (1 − e^−(seconds/180 + steps/20))`. That is roughly 25 % after 15 s and 4 steps, 50 % after a minute and 12 steps, and 80 % after four minutes and 40 steps. Run time keeps it moving during long tool calls, and each model request adds a little more. It never passes 90 % while the agent runs (`ESTIMATE_*`). The user chose time and steps over either one alone.
 - **Smooth growth:** on the desktop the row SVG is drawn anew each second. Over that second the bar glides from its current width to the width it will have one second later (a `scaleX` animation, `runSvg`). In the terminal it grows in eighths of a cell (`▏▎▍▌▋▊▉`).
-- **Reported steps** through savvy-progress's `step` tool replace the estimate with `done/total` and show `3/5 · note`. agent-crew only listens to those calls and registers no tool of its own ([no-token-cost](no-token-cost.md)).
+- **Real steps** replace the estimate with `done/total` and show `3/5 · note`: the agent's own to-do list ([progress-from-todo-lists](progress-from-todo-lists.md)), or savvy-progress's `step` tool. agent-crew only listens to those calls and registers no tool of its own ([no-token-cost](no-token-cost.md)).
 - **Ended:** a full bar, green when done, red when failed, grey when stopped. Only the last stretch from at most 90 % remains as a jump.
 - **Steps** stand in the meta line (`12 Schritte`). **Context fill** is text only (`ctx 3% · 31k`).
 

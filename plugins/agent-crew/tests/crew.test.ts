@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import { textWidth } from '../hooks/crab'
 import { isNewer } from '../hooks/files'
+import { applyTask, reportOf, todoReport } from '../hooks/progress'
 import type { Engine } from 'claude-code/testing'
 import type { AgentInfo, On } from 'claude-code'
 
@@ -1426,6 +1427,83 @@ test("a worker's reported steps fill its bar for real, with the step under way",
   expect(await ui.find({ text: /› Read/ })).toBeDefined()
   const desk = await mount($, 'desktop')
   expect(JSON.stringify(await desk.drawn())).toContain('3/5 · Tests schreiben')
+})
+
+// A to-do list as TodoWrite writes it: `done` steps completed, the next under way, the rest pending.
+const todos = (names: string[], done: number) => ({
+  todos: names.map((n, i) => ({ content: n, activeForm: `${n} läuft`, status: i < done ? 'completed' : i === done ? 'in_progress' : 'pending' })),
+})
+
+test("an agent's own to-do list fills its bar for real, with the step under way, and costs no call", async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Umbau Auth', 'general-purpose')
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/auth.ts', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'TodoWrite', ...todos(['Lesen', 'Umbauen', 'Testen', 'Aufräumen', 'Melden'], 3), agentId: 'a1' } as never)
+  const ui = await mount($, 'terminal')
+  expect(await barText(ui)).toBe('█'.repeat(12) + '░'.repeat(8))
+  expect(await ui.find({ text: /3\/5 · Aufräumen läuft/ })).toBeDefined()
+  // Writing the list is no action: the last one stays the read.
+  expect(await ui.find({ text: /› Read/ })).toBeDefined()
+  // In the agent's log it reads as where the list stands, not as its tool's name twice.
+  await openRun(ui, 'terminal', 'a1')
+  const logged = /"children":\["TodoWrite"\]\}," ","([^"]*)"/.exec(JSON.stringify(await ui.drawn()))?.[1]
+  expect(logged).toBe('3/5 · Aufräumen läuft')
+  await ui.unmount()
+  const desk = await mount($, 'desktop')
+  expect(JSON.stringify(await desk.drawn())).toContain('3/5 · Aufräumen läuft')
+})
+
+test("TaskCreate and TaskUpdate keep an agent's tasks; its bar counts the completed ones", async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Umbau Auth', 'general-purpose')
+  for (const subject of ['Lesen', 'Umbauen', 'Testen']) await $.tool.call({ tool: 'TaskCreate', subject, description: subject, activeForm: `${subject} läuft`, agentId: 'a1' } as never)
+  // Without an id in the result, a task goes by its subject.
+  await $.tool.call({ tool: 'TaskUpdate', taskId: 'Lesen', status: 'completed', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: 'Umbauen', status: 'in_progress', agentId: 'a1' } as never)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ text: /1\/3 · Umbauen läuft/ })).toBeDefined()
+  await ui.unmount()
+  // A deleted task leaves the count.
+  await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', status: 'deleted', agentId: 'a1' } as never)
+  const after = await mount($, 'terminal')
+  expect(await after.find({ text: /1\/2 · Umbauen läuft/ })).toBeDefined()
+})
+
+test("the main chat's to-do list shows beside it in the timeline while steps are open", async ($, on) => {
+  const { clock } = engine(on)
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  await start($)
+  await $.turn.start({ text: 'Los', turnId: 't1' } as never)
+  await $.tool.call({ tool: 'TodoWrite', ...todos(['Lesen', 'Umbauen', 'Testen'], 1) } as never)
+  await clock.advance(10_000)
+  for (const surface of SURFACES) expect(await timelineOf($, surface)).toContain('Hauptchat 1/3')
+  // All done: the label is the main chat's alone again.
+  await $.tool.call({ tool: 'TodoWrite', ...todos(['Lesen', 'Umbauen', 'Testen'], 3) } as never)
+  for (const surface of SURFACES) {
+    const tl = await timelineOf($, surface)
+    expect(tl).toContain('Hauptchat')
+    expect(tl).not.toContain('3/3')
+  }
+})
+
+test('reading to-do lists: TodoWrite and the task calls, as pure functions', () => {
+  expect(todoReport({})).toBeUndefined()
+  expect(todoReport({ todos: [] })).toBeUndefined()
+  expect(todoReport(todos(['a', 'b'], 1))).toEqual({ done: 1, total: 2, note: 'b läuft' })
+  expect(todoReport(todos(['a', 'b'], 2))).toEqual({ done: 2, total: 2 })
+  // A long step is cut to one line of 80 characters.
+  expect(todoReport({ todos: [{ content: 'x', activeForm: `${'y'.repeat(100)}\nz`, status: 'in_progress' }] })?.note?.length).toBe(80)
+  // The id comes from the result where there is one.
+  let list = applyTask([], 'TaskCreate', { subject: 'Testen', activeForm: 'Testet' }, { task: { id: '7', subject: 'Testen' } })
+  expect(list).toEqual([{ id: '7', subject: 'Testen', activeForm: 'Testet', status: 'pending' }])
+  list = applyTask(list, 'TaskUpdate', { taskId: '7', status: 'in_progress' }, undefined)
+  expect(reportOf(list)).toEqual({ done: 0, total: 1, note: 'Testet' })
+  // An unknown task or another tool changes nothing.
+  expect(applyTask(list, 'TaskUpdate', { taskId: '8', status: 'completed' }, undefined)).toEqual(list)
+  expect(applyTask(list, 'Read', { file_path: 'x' }, undefined)).toEqual(list)
+  expect(applyTask(list, 'TaskUpdate', { taskId: '7', status: 'deleted' }, undefined)).toEqual([])
 })
 
 test('a press shuts a folder a fresh file holds open, and it stays shut', async ($, on) => {

@@ -32,8 +32,8 @@ export type CrewRun = {
   cacheTokens?: number
   /** The last thing it did, one line (`Read hooks/files.ts`). */
   lastAction?: string
-  /** Progress the agent reported itself through savvy-progress's `step` tool: steps done of planned, and the one under way. */
-  report?: { done: number; total: number; note?: string }
+  /** Progress the agent shows itself: its to-do list (`TodoWrite`, `TaskCreate`/`TaskUpdate`) or savvy-progress's `step` tool; steps done of planned, and the one under way. */
+  report?: CrewReport
   /** Its final answer, cut to a few thousand characters. */
   lastAnswer?: string
 }
@@ -48,6 +48,12 @@ export type CrewLog = {
 }
 
 export type CrewTab = 'active' | 'done'
+
+/** Steps done of planned, and the one under way. */
+export type CrewReport = { done: number; total: number; note?: string }
+
+/** A task an agent keeps through `TaskCreate` and `TaskUpdate`, as far as its calls tell. */
+export type CrewTask = { id: string; subject: string; activeForm?: string; status: 'pending' | 'in_progress' | 'completed' }
 
 /** One turn of the main chat, from `turn.start` to its `turn.complete`; open while it runs. */
 export type CrewMainTurn = { startedAt: number; endedAt?: number; reason?: 'answer' | 'aborted' | 'refusal' | 'error' }
@@ -177,6 +183,10 @@ declare module 'claude-code' {
       typeColors: Record<string, string>
       /** The main chat's turns, oldest first, for the timeline: when each began and ended, and how. */
       mainTurns: CrewMainTurn[]
+      /** Each agent's tasks from `TaskCreate`/`TaskUpdate`, by agent id (`main` for the main chat). */
+      taskLists: Record<string, CrewTask[]>
+      /** The main chat's progress through its to-do list, for the timeline; null without one. */
+      mainReport: CrewReport | null
     }
   }
 }

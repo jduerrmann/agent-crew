@@ -2,13 +2,14 @@ import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
 import type { CrewUpdate, CrewUsage } from '../types'
-import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewMainTurn, CrewPanel, CrewRun, CrewStatus, CrewTab } from '../types'
+import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewMainTurn, CrewPanel, CrewReport, CrewRun, CrewStatus, CrewTab, CrewTask } from '../types'
 import { CLAY, FLIP_MS, FONT, crab, fitText, svg, textWidth, xml } from './crab'
 import type { FileRowSpec, FileRowsProps, Seg } from './filerows'
 import type { SearchBoxProps } from './searchbox'
 import { applyNumstat, filesBeneath, folderKeys, folderOf, inside, isNewer, keyOf, mayChange, openCommand, parseStatus, posix, rawGithubUrl, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
 import type { TreeRow } from './files'
 import type { HotSeg, HotspotProps } from './hotspot'
+import { applyTask, isTodoTool, reportOf, todoReport } from './progress'
 import type { Tab, TabsProps } from './tabs'
 
 // One pane for the session's crew and what it touched. Above: every subagent,
@@ -42,6 +43,8 @@ const tree = atom({ plugin: 'agent-crew', key: 'tree' } as const, null)
 const updateInfo = atom({ plugin: 'agent-crew', key: 'update' } as const, null)
 const typeColors = atom({ plugin: 'agent-crew', key: 'typeColors' } as const, {})
 const mainTurns = atom({ plugin: 'agent-crew', key: 'mainTurns' } as const, [])
+const taskLists = atom({ plugin: 'agent-crew', key: 'taskLists' } as const, {})
+const mainReport = atom({ plugin: 'agent-crew', key: 'mainReport' } as const, null)
 
 // The plugin's options, set by register on every (re)load.
 let opts: Record<string, unknown> = {}
@@ -407,8 +410,9 @@ const ESTIMATE_CAP = 0.9
 /**
  * What an agent's bar shows. The engine reports no progress for a subagent, so
  * a running agent's bar is an estimate from its run time and its model requests:
- * quick at first, ever slower, short of full until it ends. Steps it reported
- * through savvy-progress replace the estimate. An ended run's bar is full, in
+ * quick at first, ever slower, short of full until it ends. The steps of its own
+ * to-do list (TodoWrite, TaskCreate/TaskUpdate), or ones it reported through
+ * savvy-progress, replace the estimate. An ended run's bar is full, in
  * its end's colour. Context fill is only text beside it.
  */
 type AgentBar = { share: number; color: string; label: string }
@@ -602,6 +606,13 @@ const summarize = (tool: string, input: Loose, base: string): string => {
   if (tool === 'Agent') return oneLine(str(input.description), 80)
   if (tool === 'WebFetch') return oneLine(str(input.url), 100)
   if (tool === 'WebSearch') return oneLine(str(input.query), 100)
+  // A to-do list: where it stands, not its first field.
+  if (tool === 'TodoWrite') {
+    const rep = todoReport(input)
+    return rep ? `${rep.done}/${rep.total}${rep.note ? ` · ${rep.note}` : ''}` : ''
+  }
+  if (tool === 'TaskCreate') return oneLine(str(input.subject), 80)
+  if (tool === 'TaskUpdate') return oneLine([str(input.subject) || str(input.taskId), str(input.status)].filter(Boolean).join(' → '), 80)
   const first = Object.values(input).find(v => typeof v === 'string' && v.trim())
   return typeof first === 'string' ? oneLine(first, 80) : ''
 }
@@ -994,6 +1005,33 @@ const stepReport =
     return { done: total ? Math.min(total, done) : done, total, ...(note ? { note } : {}) }
   }
 
+/** Agents whose task lists are kept: the newest this many. */
+const MAX_TASK_AGENTS = 100
+
+// The to-do list an agent keeps, read from its own calls: TodoWrite writes the
+// whole list, TaskCreate and TaskUpdate change one task of the list kept here.
+// A subagent's bar shows it; the main chat's shows in the timeline.
+async function trackTodos($: EngineInterface, tool: string, input: Loose, out: Loose | undefined, agent: string): Promise<void> {
+  let report: CrewReport | undefined
+  if (tool === 'TodoWrite') report = todoReport(input)
+  else {
+    let tasks: CrewTask[] = []
+    await update($, taskLists, all => {
+      tasks = applyTask(all[agent] ?? [], tool, input, out)
+      const rest = Object.entries(all).filter(([k]) => k !== agent)
+      return Object.fromEntries([...rest, [agent, tasks]].slice(-MAX_TASK_AGENTS))
+    })
+    report = reportOf(tasks)
+  }
+  if (agent === 'main') {
+    await update($, mainReport, () => report ?? null)
+    const at = await $.clock.now()
+    await update($, now, () => at)
+    return
+  }
+  if (report) await update($, runs, list => list.map(r => (r.agentId === agent ? { ...r, report } : r)))
+}
+
 async function record($: EngineInterface, tool: string, input: Loose, out: Loose | undefined, isOk: boolean, agentId: string | undefined): Promise<void> {
   const agent = agentId ?? 'main'
   const g = await read($, git)
@@ -1004,15 +1042,16 @@ async function record($: EngineInterface, tool: string, input: Loose, out: Loose
     const at = await $.clock.now()
     await pushLog($, agentId, { at, kind: 'tool', tool: toolName(tool), text, isError: !isOk || undefined })
     const line = `${toolName(tool)}${text ? ' ' + text : ''}`
-    // A progress report is no action of its own: it fills the bar instead.
+    // A progress report is no action of its own: it fills the bar instead, as a
+    // to-do list's update does (trackTodos).
     const report = tool === STEP_TOOL && isOk ? stepReport(input) : undefined
+    const isProgress = tool === STEP_TOOL || isTodoTool(tool)
     await update($, runs, list =>
-      list.map(r =>
-        r.agentId !== agentId ? r : report ? { ...r, report: report(r.report) } : tool === STEP_TOOL ? r : { ...r, lastAction: oneLine(line, 140) },
-      ),
+      list.map(r => (r.agentId !== agentId ? r : report ? { ...r, report: report(r.report) } : isProgress ? r : { ...r, lastAction: oneLine(line, 140) })),
     )
   }
   if (!isOk) return
+  if (isTodoTool(tool)) await trackTodos($, tool, input, out, agent)
 
   const file = str(input.file_path) || str(input.notebook_path)
   if (tool === 'Read' && file) await touch($, [file], 'read', agent)
@@ -1390,7 +1429,10 @@ const turnTone = (t: CrewMainTurn): { color: string; opacity: number } =>
 /** The main chat's turns the timeline shows, by the `timelineMain` option. */
 const shownTurns = (turns: readonly CrewMainTurn[]): CrewMainTurn[] => (opts.timelineMain === false ? [] : [...turns])
 
-const timelineSvg = (W: number, list: CrewRun[], turns: readonly CrewMainTurn[], at: number): { source: string; height: number } => {
+// The main chat's row label, with how far its to-do list has come while steps are open.
+const mainLabel = (rep: CrewReport | null): string => `${tr().main}${rep && rep.total && rep.done < rep.total ? ` ${rep.done}/${rep.total}` : ''}`
+
+const timelineSvg = (W: number, list: CrewRun[], turns: readonly CrewMainTurn[], rep: CrewReport | null, at: number): { source: string; height: number } => {
   const items = timelineRuns(list)
   const labelW = Math.min(170, Math.round(W * 0.32))
   const barX = labelW + 8
@@ -1399,7 +1441,7 @@ const timelineSvg = (W: number, list: CrewRun[], turns: readonly CrewMainTurn[],
   const axis = timelineAxis([...items, ...turns], at, barW, GAP_W)
   const top = turns.length ? 1 : 0
   const mainRow = turns.length
-    ? `<text class="s" x="0" y="11" font-family="${FONT}" font-size="11">${xml(fitText(tr().main, 11, labelW))}</text>` +
+    ? `<text class="s" x="0" y="11" font-family="${FONT}" font-size="11">${xml(fitText(mainLabel(rep), 11, labelW))}</text>` +
       `<rect class="k" x="${barX}" y="4" width="${barW}" height="7" rx="3.5"/>` +
       turns
         .map(t => {
@@ -3291,6 +3333,7 @@ export const register: Register = (on, options) => {
 
       // --- the timeline, by the `showTimeline` option.
       const turns = shownTurns(await read($, mainTurns))
+      const mainRep = await read($, mainReport)
       const showTimeline = opts.showTimeline !== false && (list.length > 0 || turns.length > 0)
       const isAllHidden = !showUsage && !showTotals && !showAgents && opts.showTimeline === false && !showFiles
       const timelineToggle = (
@@ -3366,7 +3409,7 @@ export const register: Register = (on, options) => {
             </Box>
           )
         }
-        const timeline = showTimeline && p.isTimelineOpen ? timelineSvg(W, list, turns, at) : null
+        const timeline = showTimeline && p.isTimelineOpen ? timelineSvg(W, list, turns, mainRep, at) : null
 
         // Compact folds the agents' frame alone: a row of crabs each for active and finished.
         const compact = compactSvg(W, list.filter(isActive), list.filter(r => !isActive(r)), null, at)
@@ -3517,7 +3560,7 @@ export const register: Register = (on, options) => {
         const main = turns.length
           ? [
               <Text key="tl-main" wrap="truncate-end">
-                <Text dimColor>{oneLine(s.main, labelW).padEnd(labelW)} </Text>
+                <Text dimColor>{oneLine(mainLabel(mainRep), labelW).padEnd(labelW)} </Text>
                 {lineOf(
                   turns.map(t => {
                     const [from, to] = cellsOf(t)

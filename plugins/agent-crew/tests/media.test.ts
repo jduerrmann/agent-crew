@@ -186,6 +186,14 @@ async function team($: Engine, w: ReturnType<typeof world>, git: ReturnType<type
   await tool($, { tool: 'Edit', file_path: '/work/src/auth/tokens.ts', old_string: 'a', new_string: 'b', agentId: 'a4' })
   await tool($, { tool: 'Write', file_path: '/work/src/auth/refresh.ts', content: 'x', agentId: 'a4' })
   await steps($, w, 'a4', 4, { input_tokens: 2800, output_tokens: 2400, cache_read_input_tokens: 61_000 }, 'claude-opus-5-5', 'high')
+  // The refactor keeps a to-do list: its bar shows it for real.
+  const plan = ['Read the token store', 'Make refresh async', 'Update the callers', 'Add the refresh helper', 'Run the tests']
+  const active = ['Reading the token store', 'Making refresh async', 'Updating the callers', 'Adding the refresh helper', 'Running the tests']
+  await tool($, {
+    tool: 'TodoWrite',
+    todos: plan.map((content, i) => ({ content, activeForm: active[i], status: i < 2 ? 'completed' : i === 2 ? 'in_progress' : 'pending' })),
+    agentId: 'a4',
+  })
   await tool($, { tool: 'Edit', file_path: '/work/src/auth/tokens.ts', old_string: 'b', new_string: 'c' })
   await tool($, { tool: 'Write', file_path: '/work/docs/MIGRATION.md', content: 'x' })
   // A commit of the entry points.

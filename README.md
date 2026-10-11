@@ -105,7 +105,7 @@ The section is off by default. Costs are estimated from token counts and a price
 - **Coverage:** Agent-tool subagents of any type, forks, teammates, background agents, workflow agents, and nested agents under their parent.
 - **Tabs:** *Active* and *Finished*. A finished parent stays in *Active* while one of its children is still running.
 - **Rows:** model, effort, steps so far, the agent's latest action, context fill, estimated cost and run time.
-- **Bar:** Claude Code reports no progress for subagents, so while an agent runs its bar is an estimate from run time and model requests. It fills quickly at first, then ever more slowly, and stops short of 90 %. A worker that reports its steps through [savvy-progress](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress)'s `step` tool fills the bar for real (`3/5 · writing tests`). Finished agents get a full bar: green when done, red when failed, grey when stopped.
+- **Bar:** an agent that keeps a to-do list (`TodoWrite`, or `TaskCreate` and `TaskUpdate`) fills its bar for real, with the step under way beside it (`2/5 · Updating the callers`). agent-crew only reads those calls; it adds no tool and costs no tokens. Without a list the bar is an estimate from run time and model requests: it fills quickly at first, then ever more slowly, and stops short of 90 %. Steps reported through [savvy-progress](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress)'s `step` tool count too. Finished agents get a full bar: green when done, red when failed, grey when stopped.
 - **Details:** expanding a row shows the agent's task, its recent tool calls and messages, the files it read and changed, and its final answer. *Highlight its files* dims every other file in the tree.
 - **Notifications** when background or workflow agents finish, and whenever an agent fails or is stopped.
 - **Clear finished**, under the *Finished* tab, removes finished agents from the list. Their cost remains in the totals.
@@ -127,7 +127,7 @@ The section is off by default. Costs are estimated from token counts and a price
 </p>
 
 - **One time axis** for all agents: which ran when, and which ran in parallel.
-- **The main chat** in a row at the top: each of its turns a bar in Claude's colour, red when a turn failed and faint when it was interrupted. `timelineMain` turns the row off.
+- **The main chat** in a row at the top: each of its turns a bar in Claude's colour, red when a turn failed and faint when it was interrupted. While its to-do list has open steps, the row says how far it has come (`main chat 2/5`). `timelineMain` turns the row off.
 - **Folded pauses:** any stretch longer than 90 seconds without a running agent is folded into a labelled break, so rounds of work an hour apart keep readable bars.
 
 ### Files
