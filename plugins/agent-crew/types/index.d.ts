@@ -68,6 +68,8 @@ export type CrewCleared = {
   cost: number
   tokens: number
   cache?: number
+  /** Agents cleared or trimmed from the list, so the engine's list does not bring them back. */
+  ids?: string[]
 }
 
 export type CrewFile = {

@@ -6,10 +6,15 @@ import type { CrewGit, CrewGitFile } from '../types'
 
 // --- paths: everything is kept with forward slashes and an upper-case drive.
 
+// Git Bash spells `C:\` as `/c/`; read back only where there are drives, since
+// elsewhere `/a/project` is just a folder.
+let hasDrives = false
+export const useDrives = (on: boolean): void => {
+  hasDrives = on
+}
+
 export const posix = (p: string): string =>
-  p
-    .replace(/\\/g, '/')
-    .replace(/^\/([A-Za-z])(\/|$)/, (_, d: string) => `${d.toUpperCase()}:/`)
+  (hasDrives ? p.replace(/\\/g, '/').replace(/^\/([A-Za-z])(\/|$)/, (_, d: string) => `${d.toUpperCase()}:/`) : p.replace(/\\/g, '/'))
     .replace(/^([a-z]):/, (_, d: string) => `${d.toUpperCase()}:`)
     .replace(/(.)\/+$/, '$1')
 
@@ -82,6 +87,32 @@ const READERS = new Set(['rg', 'grep', 'egrep', 'fgrep', 'cat', 'head', 'tail', 
 const PATTERN_FIRST = new Set(['rg', 'grep', 'egrep', 'fgrep', 'sed', 'awk', 'jq'])
 const LISTS_FILES = new Set(['rg', 'grep', 'egrep', 'fgrep'])
 
+// Options that take the next word as their value, per reader: `-n` does for
+// head, but numbers lines for grep and silences sed.
+const GREP_VALUED = /^-(e|f|m|A|B|C|-regexp|-file|-max-count|-after-context|-before-context|-context)$/
+const CONTENT_VALUED = /^-(TotalCount|Head|First|Tail|Last|Encoding|Delimiter|ReadCount)$/i
+const VALUED: Record<string, RegExp> = {
+  rg: /^-(e|f|g|t|T|m|A|B|C|M|j|-regexp|-file|-glob|-iglob|-type|-type-not|-max-count|-after-context|-before-context|-context|-max-columns|-threads)$/,
+  grep: GREP_VALUED,
+  egrep: GREP_VALUED,
+  fgrep: GREP_VALUED,
+  head: /^-(n|c|-lines|-bytes)$/,
+  tail: /^-(n|c|s|-lines|-bytes|-sleep-interval|-pid)$/,
+  sed: /^-(e|f|l|-expression|-file|-line-length)$/,
+  awk: /^-(f|v|F)$/,
+  jq: /^-(f|-from-file|-indent)$/,
+  bat: /^-(l|H|r|-language|-highlight-line|-line-range|-theme|-style)$/,
+  'Get-Content': CONTENT_VALUED,
+  gc: CONTENT_VALUED,
+}
+
+const valuesOf = (head: string, option: string): number =>
+  head === 'jq' && /^--(arg|argjson|slurpfile|rawfile)$/.test(option) ? 2 : VALUED[head]?.test(option) ? 1 : 0
+
+// A pattern or script given by option leaves no positional one to skip.
+const givesScript = (head: string, option: string): boolean =>
+  head === 'jq' ? /^-(f|-from-file)$/.test(option) : /^-(e|f|-regexp|-file|-expression)$/.test(option)
+
 // A path that names a file rather than a folder, as far as its spelling tells.
 const looksLikeFile = (p: string): boolean => /[^/]\.[A-Za-z0-9]{1,8}$/.test(p) && !/[*?<>|$]/.test(p)
 
@@ -101,11 +132,11 @@ export function readTargets(command: string, sessionCwd: string, stdout: string,
     if (head === 'sed' && tokens.some(t => /^-i/.test(t))) continue
     if (LISTS_FILES.has(head) && tokens.some(t => /^-(l|-files-with-matches|-files)$/.test(t))) listsPaths = true
     const args = tokens.slice(1)
-    let skipPattern = PATTERN_FIRST.has(head) && !args.some(t => t === '-e' || t === '-f')
+    let skipPattern = PATTERN_FIRST.has(head) && !args.some(t => givesScript(head, t))
     for (let i = 0; i < args.length; i++) {
       const a = args[i] ?? ''
       if (a.startsWith('-')) {
-        if (/^-(e|f|g|t|T|m|A|B|C|n|-glob|-type|-max-count|Path|TotalCount|Tail)$/.test(a)) i++
+        i += valuesOf(head, a)
         continue
       }
       if (skipPattern) {
@@ -148,7 +179,8 @@ export function parseStatus(raw: string, root: string): Pick<CrewGit, 'branch' |
     const entry = parts[i] ?? ''
     if (!entry) continue
     if (entry.startsWith('## ')) {
-      const m = /^## (?:No commits yet on )?([^.\s]+)(?:\.\.\.(\S+))?(?: \[(.*)\])?/.exec(entry)
+      // A branch may hold single dots (`release/0.3`), never `..`.
+      const m = /^## (?:No commits yet on )?(\S+?)(?:\.\.\.(\S+))?(?=\s|$)(?: \[(.*)\])?/.exec(entry)
       branch = m?.[1] ?? ''
       upstream = m?.[2] ?? ''
       ahead = Number(/ahead (\d+)/.exec(m?.[3] ?? '')?.[1] ?? 0)

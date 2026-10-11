@@ -4,7 +4,7 @@ import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 import type { CrewUsage } from '../types'
 import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewPanel, CrewRun, CrewStatus, CrewTab } from '../types'
 import { CLAY, FONT, crab, fitText, svg, textWidth, xml } from './crab'
-import { applyNumstat, inside, keyOf, mayChange, parseStatus, posix, readTargets, resolve, treeRows } from './files'
+import { applyNumstat, inside, keyOf, mayChange, parseStatus, posix, readTargets, resolve, treeRows, useDrives } from './files'
 import type { Tab, TabsProps } from './tabs'
 
 // One pane for the session's crew and what it touched. Above: every subagent,
@@ -45,6 +45,7 @@ const CONFLICT_MS = 10 * 60_000
 
 const PANE = 'agent-crew'
 const MAX_RUNS = 300
+const MAX_CLEARED = 2000
 const MAX_FILES = 400
 const MAX_LOG = 40
 const MAX_TEXT = 4000
@@ -108,7 +109,7 @@ const STRINGS = {
     noHits: 'Keine Datei passt zur Suche.',
     fresh: 'neu',
     cached: 'aus Cache',
-    costNote: 'Tokens: neu = Eingabe, Ausgabe, Cache-Schreiben. Jede Anfrage liest den ganzen Kontext erneut, meist günstig aus dem Cache. Kosten sind geschätzt.',
+    allHidden: 'Alle Abschnitte sind ausgeblendet.',
     total: 'Gesamt',
     subagents: (n: number) => `Subagenten (${n})`,
     usage: 'Nutzung',
@@ -182,7 +183,7 @@ const STRINGS = {
     noHits: 'No file matches the search.',
     fresh: 'new',
     cached: 'cached',
-    costNote: 'Tokens: new = input, output, cache writes. Each request rereads the whole context, mostly cheaply from the cache. Cost is an estimate.',
+    allHidden: 'Every section is hidden.',
     total: 'Total',
     subagents: (n: number) => `Subagents (${n})`,
     usage: 'Usage',
@@ -348,6 +349,30 @@ const trimRuns = (list: CrewRun[]): CrewRun[] => {
   return list.filter(r => (over > 0 && !isActive(r) ? (over--, false) : true))
 }
 
+// Runs that leave the list keep their figures in the totals, and their ids, so
+// the engine's list does not bring them back.
+async function retire($: EngineInterface, gone: CrewRun[]): Promise<void> {
+  if (!gone.length) return
+  await update($, cleared, c => ({
+    cost: c.cost + gone.reduce((sum, r) => sum + r.costUsd, 0),
+    tokens: c.tokens + gone.reduce((sum, r) => sum + r.tokens, 0),
+    cache: (c.cache ?? 0) + gone.reduce((sum, r) => sum + (r.cacheTokens ?? 0), 0),
+    ids: [...(c.ids ?? []), ...gone.flatMap(r => (r.agentId ? [r.agentId] : []))].slice(-MAX_CLEARED),
+  }))
+}
+
+// Writes the run list through the cap; what falls off is retired.
+async function storeRuns($: EngineInterface, fn: (list: CrewRun[]) => CrewRun[]): Promise<void> {
+  let gone: CrewRun[] = []
+  await update($, runs, list => {
+    const all = fn(list)
+    const kept = trimRuns(all)
+    gone = all.filter(r => !kept.includes(r))
+    return kept
+  })
+  await retire($, gone)
+}
+
 // ---------------------------------------------------------------------------
 // Types, colours, costumes.
 
@@ -503,11 +528,14 @@ async function reconcile($: EngineInterface): Promise<void> {
   if (!list.length) return
   const at = await $.clock.now()
   const next = [...(await read($, runs))]
+  const retired = new Set((await read($, cleared)).ids ?? [])
   let changed = false
   for (const info of list) {
     const i = next.findIndex(r => r.agentId === info.id)
     const status = statusFromList(info.status)
     if (i < 0) {
+      // A cleared agent stays gone, unless it is working again.
+      if (retired.has(info.id) && isTerminal(status)) continue
       next.push({
         id: info.id,
         agentId: info.id,
@@ -539,7 +567,7 @@ async function reconcile($: EngineInterface): Promise<void> {
     changed = true
   }
   if (!changed) return
-  await update($, runs, () => trimRuns(next))
+  await storeRuns($, () => next)
   await refreshStatus($)
 }
 
@@ -585,10 +613,12 @@ async function touch($: EngineInterface, paths: string[], kind: 'read' | 'write'
       const i = list.findIndex(f => f.key === key)
       const old: CrewFile = list[i] ?? { key, path, reads: 0, writes: 0, lastAt: at, lastKind: kind, agents: [] }
       const history = [...(old.history ?? []), { at, agent, kind }].slice(-MAX_HISTORY)
-      // Several agents changing one file close together: flag it once.
+      // Several agents changing one file close together: flag it once. A commit
+      // settles what came before it.
       let conflict = old.conflict
       if (kind === 'write') {
-        const writers = [...new Set(history.filter(h => h.kind === 'write' && at - h.at < CONFLICT_MS).map(h => h.agent))]
+        const since = old.commitAt ?? -Infinity
+        const writers = [...new Set(history.filter(h => h.kind === 'write' && at - h.at < CONFLICT_MS && h.at > since).map(h => h.agent))]
         if (writers.length > 1 && writers.some(w => !(old.conflict ?? []).includes(w))) {
           conflict = writers
           conflicts.push({ path, agents: writers })
@@ -639,7 +669,7 @@ async function loadDiff($: EngineInterface, key: string): Promise<void> {
     }
   }
   const next = text ? { key, text: text.slice(0, MAX_DIFF), format } : null
-  await update($, diff, () => next)
+  if (JSON.stringify(await read($, diff)) !== JSON.stringify(next)) await update($, diff, () => next)
 }
 
 const runGit = async ($: EngineInterface, cwd: string, args: string[]): Promise<string | null> => {
@@ -684,8 +714,11 @@ async function syncGit($: EngineInterface): Promise<void> {
 
     // Commits since the last look: their files turn green.
     const prev = await read($, git)
-    if (prev && prev.root === root && prev.head && head && prev.head !== head) {
-      const names = await runGit($, root, ['diff', '--name-only', '-z', prev.head, head])
+    if (prev && prev.root === root && head && prev.head !== head) {
+      // After the repository's first commit, everything in its tree is new.
+      const names = prev.head
+        ? await runGit($, root, ['diff', '--name-only', '-z', prev.head, head])
+        : await runGit($, root, ['ls-tree', '-r', '--name-only', '-z', head])
       const committed = (names ?? '').split('\0').filter(Boolean).slice(0, 200).map(rel => `${root}/${rel}`)
       if (committed.length) {
         const at = await $.clock.now()
@@ -707,12 +740,11 @@ async function syncGit($: EngineInterface): Promise<void> {
       }
     }
     const next: CrewGit = { root, head, ...status, files: byKey }
-    if (JSON.stringify(prev) !== JSON.stringify(next)) {
-      await update($, git, () => next)
-      // The open file's diff follows the tree.
-      const open = (await readPanel($)).openFile
-      if (open) await loadDiff($, open)
-    }
+    if (JSON.stringify(prev) !== JSON.stringify(next)) await update($, git, () => next)
+    // The open file's diff follows the tree, also when an edit leaves its
+    // status and line counts as they were.
+    const open = (await readPanel($)).openFile
+    if (open) await loadDiff($, open)
   } finally {
     gitBusy = false
     if (gitQueued) {
@@ -1026,6 +1058,10 @@ const metersOf = (u: CrewUsage): Meter[] => {
   return out.map(m => ({ ...m, percent: Math.max(0, Math.min(100, Math.round(m.percent))) }))
 }
 
+// The option that shows a meter: the context, the 5-hour window, or a weekly one.
+const meterOption = (key: string): string =>
+  key === 'context' ? 'usageContext' : /five|5h/i.test(key) ? 'usageFiveHour' : 'usageWeek'
+
 // Blue while there is room, amber from 80 %, red from 95 %.
 const meterColor = (percent: number): string => (percent >= 95 ? '#D0453F' : percent >= 80 ? '#BA7517' : '#378ADD')
 
@@ -1236,12 +1272,20 @@ async function warnLimits($: EngineInterface): Promise<void> {
 const PLUGIN = 'agent-crew'
 const SETTINGS = 'agent-crew-settings'
 
-type Field = { key: string; group: 'view' | 'notify'; default: boolean | string; choices?: readonly string[] }
+type Group = 'sections' | 'usage' | 'view' | 'notify'
+type Field = { key: string; group: Group; default: boolean | string; choices?: readonly string[] }
+
+const GROUPS: readonly Group[] = ['sections', 'usage', 'view', 'notify']
 
 const FIELDS: readonly Field[] = [
-  { key: 'showUsage', group: 'view', default: true },
-  { key: 'showTimeline', group: 'view', default: true },
-  { key: 'showTotals', group: 'view', default: false },
+  { key: 'showUsage', group: 'sections', default: true },
+  { key: 'showTotals', group: 'sections', default: false },
+  { key: 'showAgents', group: 'sections', default: true },
+  { key: 'showTimeline', group: 'sections', default: true },
+  { key: 'showFiles', group: 'sections', default: true },
+  { key: 'usageContext', group: 'usage', default: true },
+  { key: 'usageFiveHour', group: 'usage', default: true },
+  { key: 'usageWeek', group: 'usage', default: true },
   { key: 'autoOpen', group: 'view', default: true },
   { key: 'language', group: 'view', default: 'auto', choices: ['auto', 'de', 'en'] },
   { key: 'notifyAgents', group: 'notify', default: 'background', choices: ['off', 'failures', 'background', 'all'] },
@@ -1253,8 +1297,7 @@ const FIELDS: readonly Field[] = [
 const FIELD_TEXT = {
   de: {
     title: 'Crew · Einstellungen',
-    view: 'Anzeige',
-    notify: 'Benachrichtigungen',
+    groups: { sections: 'Abschnitte', usage: 'Nutzung', view: 'Allgemein', notify: 'Benachrichtigungen' } as Record<Group, string>,
     on: 'An',
     off: 'Aus',
     locked: 'Vom Administrator festgelegt',
@@ -1262,9 +1305,14 @@ const FIELD_TEXT = {
     opened: 'Crew-Einstellungen geöffnet.',
     open: 'Einstellungen',
     fields: {
-      showUsage: ['Nutzung', 'Kontext, 5-Stunden- und Wochenlimit oben im Panel'],
-      showTimeline: ['Zeitleiste', 'Wann welcher Agent lief, auf einer gemeinsamen Achse'],
+      showUsage: ['Nutzung', 'Kontext und Limits oben im Panel; welche, legt die Gruppe Nutzung fest'],
       showTotals: ['Kosten', 'Hauptchat und Subagenten getrennt, mit Tokens und Gesamtsumme'],
+      showAgents: ['Subagenten', 'Laufende und fertige Subagenten, mit Details'],
+      showTimeline: ['Zeitleiste', 'Wann welcher Agent lief, auf einer gemeinsamen Achse'],
+      showFiles: ['Dateien', 'Gelesene, geänderte und committete Dateien als Baum, mit Diff'],
+      usageContext: ['Kontext', 'Wie voll das Kontextfenster der Session ist'],
+      usageFiveHour: ['5-Stunden-Limit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
+      usageWeek: ['Wochenlimit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
       autoOpen: ['Automatisch öffnen', 'Das Panel öffnet sich beim ersten Subagenten einer Session'],
       language: ['Sprache', 'Automatisch folgt der Sprache von Claude Code, dann dem System'],
       notifyAgents: ['Agent fertig', 'Wann eine Meldung kommt, wenn ein Subagent endet'],
@@ -1280,8 +1328,7 @@ const FIELD_TEXT = {
   },
   en: {
     title: 'Crew · Settings',
-    view: 'Display',
-    notify: 'Notifications',
+    groups: { sections: 'Sections', usage: 'Usage', view: 'General', notify: 'Notifications' } as Record<Group, string>,
     on: 'On',
     off: 'Off',
     locked: 'Set by your administrator',
@@ -1289,9 +1336,14 @@ const FIELD_TEXT = {
     opened: 'Crew settings opened.',
     open: 'Settings',
     fields: {
-      showUsage: ['Usage', 'Context, 5-hour and weekly limit at the top of the panel'],
-      showTimeline: ['Timeline', 'When each agent ran, on one shared axis'],
+      showUsage: ['Usage', 'Context and limits at the top of the panel; the Usage group picks which'],
       showTotals: ['Cost', 'Main chat and subagents apart, with tokens and a total'],
+      showAgents: ['Subagents', 'Running and finished subagents, with details'],
+      showTimeline: ['Timeline', 'When each agent ran, on one shared axis'],
+      showFiles: ['Files', 'Files read, changed and committed, as a tree with diffs'],
+      usageContext: ['Context', 'How full the session’s context window is'],
+      usageFiveHour: ['5-hour limit', 'Use so far and time until it resets'],
+      usageWeek: ['Weekly limit', 'Use so far and time until it resets'],
       autoOpen: ['Open automatically', 'The panel opens on the first subagent of a session'],
       language: ['Language', 'Automatic follows Claude Code’s language, then the system'],
       notifyAgents: ['Agent finished', 'When a notice comes as a subagent ends'],
@@ -1340,6 +1392,7 @@ export const register: Register = (on, options) => {
     const started = await next(e)
     lang = await detectLang($, opts.language)
     fold = (await $.env.get('OS')) === 'Windows_NT'
+    useDrives(fold)
     home = posix(((await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) || '').replace(/[\\/]+$/, ''))
     await $.command.register({
       name: 'crew',
@@ -1352,16 +1405,19 @@ export const register: Register = (on, options) => {
 
     // Each second: clocks of running rows and the fade of fresh files. Every few
     // seconds while something is active: the engine's agent list. While the pane
-    // is open, git every ten seconds, so commits made outside show up too.
+    // is open, git every ten seconds, so commits made outside show up too, and
+    // the usage resets' countdowns every half minute.
     $.clock.every(1000, () => {
       void (async () => {
         tick++
         const list = await read($, runs)
         const at = await $.clock.now()
         const fresh = (await read($, files)).some(f => at - f.lastAt < FRESH_MS + 1000)
-        if (list.some(r => r.status === 'running') || fresh) await update($, now, () => at)
+        const counts = tick % 30 === 0 && (await read($, usage)).limits.some(l => l.resetsAt)
+        const isOpen = (tick % 10 === 0 || counts) && (await $.ui.panes()).some(p => p.id === PANE)
+        if (list.some(r => r.status === 'running') || fresh || (counts && isOpen)) await update($, now, () => at)
         if (list.some(isActive) && tick % 3 === 0) await reconcile($)
-        if (tick % 10 === 0 && (await $.ui.panes()).some(p => p.id === PANE)) await syncGit($)
+        if (tick % 10 === 0 && isOpen) await syncGit($)
       })().catch(() => undefined)
     })
     await reconcile($)
@@ -1453,11 +1509,11 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const group = (id: 'view' | 'notify') => (
+    const group = (id: Group) => (
       <Box key={`group-${id}`} {...FRAME}>
         <Box marginBottom={1}>
           <Text bold dimColor>
-            {id === 'view' ? f.view : f.notify}
+            {f.groups[id]}
           </Text>
         </Box>
         {FIELDS.filter(x => x.group === id).map(fieldRow)}
@@ -1466,8 +1522,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column" gap={1}>
-        {group('view')}
-        {group('notify')}
+        {GROUPS.map(group)}
         <Text dimColor>{f.footer}</Text>
       </Box>
     )
@@ -1500,7 +1555,7 @@ export const register: Register = (on, options) => {
       costUsd: 0,
       steps: 0,
     }
-    await update($, runs, list => trimRuns([...list.filter(r => r.id !== run.id), run]))
+    await storeRuns($, list => [...list.filter(r => r.id !== run.id), run])
     await update($, now, () => at)
     await refreshStatus($)
 
@@ -1655,9 +1710,11 @@ export const register: Register = (on, options) => {
     // The session totals (cost, tokens, time) are opt-in; each agent keeps its own.
     const showTotals = opts.showTotals === true
     const showUsage = opts.showUsage !== false
+    const showAgents = opts.showAgents !== false
+    const showFiles = opts.showFiles !== false
     // Drawn again when a setting changes in the settings pane.
     await read($, settingsRev)
-    const meters = metersOf(await read($, usage))
+    const meters = metersOf(await read($, usage)).filter(m => opts[meterOption(m.key)] !== false)
     const settingsRow = (
       <Box key="settings-row" flexDirection="row" justifyContent="flex-end">
         <Button key="open-settings" label={`⚙ ${ft().open}`} plain onPress={() => openSettings($)} />
@@ -1667,7 +1724,7 @@ export const register: Register = (on, options) => {
       <Button
         key="run-compact"
         label="/compact"
-        plain
+        variant="secondary"
         onPress={() => {
           // A press's own work is dropped when the press ends: the run gets a dispatch of its own.
           $.clock.after(1, () => void $.command.run({ command: 'compact' }).catch(() => undefined))
@@ -1749,12 +1806,7 @@ export const register: Register = (on, options) => {
             label={`✕ ${s.clear} (${doneCount})`}
             variant="secondary"
             onPress={async () => {
-              const gone = (await read($, runs)).filter(r => !isActive(r))
-              await update($, cleared, c => ({
-                cost: c.cost + gone.reduce((sum, r) => sum + r.costUsd, 0),
-                tokens: c.tokens + gone.reduce((sum, r) => sum + r.tokens, 0),
-                cache: (c.cache ?? 0) + gone.reduce((sum, r) => sum + (r.cacheTokens ?? 0), 0),
-              }))
+              await retire($, (await read($, runs)).filter(r => !isActive(r)))
               await update($, runs, l => l.filter(isActive))
             }}
           />
@@ -2061,6 +2113,7 @@ export const register: Register = (on, options) => {
 
     // --- the timeline, by the `showTimeline` option.
     const showTimeline = opts.showTimeline !== false && list.length > 0
+    const isAllHidden = !showUsage && !showTotals && !showAgents && opts.showTimeline === false && !showFiles
     const timelineToggle = (
       <Button
         key="timeline-toggle"
@@ -2136,35 +2189,36 @@ export const register: Register = (on, options) => {
                 </Text>
               </Box>
               <Svg source={costSvg(W, main, subs, list.length)} alt={`${s.main} ≈${fmtCost(main.cost)}, ${s.subagents(list.length)} ≈${fmtCost(subs.cost)}`} width={W} height={COST_H} />
-              <Text dimColor wrap="wrap">
-                {s.costNote}
-              </Text>
             </Box>
           )}
-          {p.isCompact ? (
-            agentsCompact
-          ) : (
-            <Box key="sec-agents" {...FRAME}>
-              <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-                {tabStrip}
-                {toggleCompact}
+          {showAgents &&
+            (p.isCompact ? (
+              agentsCompact
+            ) : (
+              <Box key="sec-agents" {...FRAME}>
+                <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+                  {tabStrip}
+                  {toggleCompact}
+                </Box>
+                {shown.length === 0 && <Text dimColor>{p.tab === 'active' ? s.noActive : s.noDone}</Text>}
+                {shown.map(row)}
+                {clearDone}
               </Box>
-              {shown.length === 0 && <Text dimColor>{p.tab === 'active' ? s.noActive : s.noDone}</Text>}
-              {shown.map(row)}
-              {clearDone}
-            </Box>
-          )}
+            ))}
           {showTimeline && (
             <Box key="sec-timeline" {...FRAME}>
               {timelineToggle}
               {timeline && <Svg source={timeline.source} alt={s.timeline} width={W} height={timeline.height} />}
             </Box>
           )}
-          <Box key="sec-files" {...FRAME}>
-            {filesHeader}
-            {searchRow}
-            {filesBody}
-          </Box>
+          {showFiles && (
+            <Box key="sec-files" {...FRAME}>
+              {filesHeader}
+              {searchRow}
+              {filesBody}
+            </Box>
+          )}
+          {isAllHidden && <Text dimColor>{s.allHidden}</Text>}
         </Box>
       )
     }
@@ -2323,63 +2377,65 @@ export const register: Register = (on, options) => {
                 <Text bold>≈{fmtCost(main.cost + subs.cost)}</Text>
               </Text>
             </Box>
-            <Text dimColor wrap="wrap">
-              {s.costNote}
-            </Text>
           </Box>
         )}
-        <Box key="sec-agents" {...FRAME}>
-          <Box flexDirection="row" justifyContent="flex-end">
-            {toggleCompact}
+        {showAgents && (
+          <Box key="sec-agents" {...FRAME}>
+            <Box flexDirection="row" justifyContent="flex-end">
+              {toggleCompact}
+            </Box>
+            {p.isCompact ? (
+              <Box flexDirection="column">
+                {(
+                  [
+                    ['c-active', s.active, list.filter(isActive), CLAY],
+                    ['c-done', s.finished, list.filter(r => !isActive(r)), COMMIT_COLOR],
+                  ] as const
+                ).map(([key, label, runsOf, color]) => (
+                  <Text key={key} wrap="truncate-end">
+                    <Text color={color}>● </Text>
+                    <Text bold>{label.padEnd(8)}</Text>
+                    <Text dimColor>{String(runsOf.length).padStart(3)} </Text>
+                    {runsOf.length === 0 ? (
+                      <Text dimColor>—</Text>
+                    ) : (
+                      runsOf.map(run => (
+                        <Text
+                          key={`${key}-${run.id}`}
+                          color={run.status === 'failed' ? 'red' : run.status === 'done' ? 'green' : colorOf(run)}
+                          dimColor={!isActive(run) && run.status !== 'failed'}
+                        >
+                          {STATUS_GLYPH[run.status]}{' '}
+                        </Text>
+                      ))
+                    )}
+                  </Text>
+                ))}
+              </Box>
+            ) : (
+              <Box flexDirection="column">
+                {tabStrip}
+                {shown.length === 0 && <Text dimColor>{p.tab === 'active' ? s.noActive : s.noDone}</Text>}
+                {shown.map(row)}
+                {clearDone}
+              </Box>
+            )}
           </Box>
-          {p.isCompact ? (
-            <Box flexDirection="column">
-              {(
-                [
-                  ['c-active', s.active, list.filter(isActive), CLAY],
-                  ['c-done', s.finished, list.filter(r => !isActive(r)), COMMIT_COLOR],
-                ] as const
-              ).map(([key, label, runsOf, color]) => (
-                <Text key={key} wrap="truncate-end">
-                  <Text color={color}>● </Text>
-                  <Text bold>{label.padEnd(8)}</Text>
-                  <Text dimColor>{String(runsOf.length).padStart(3)} </Text>
-                  {runsOf.length === 0 ? (
-                    <Text dimColor>—</Text>
-                  ) : (
-                    runsOf.map(run => (
-                      <Text
-                        key={`${key}-${run.id}`}
-                        color={run.status === 'failed' ? 'red' : run.status === 'done' ? 'green' : colorOf(run)}
-                        dimColor={!isActive(run) && run.status !== 'failed'}
-                      >
-                        {STATUS_GLYPH[run.status]}{' '}
-                      </Text>
-                    ))
-                  )}
-                </Text>
-              ))}
-            </Box>
-          ) : (
-            <Box flexDirection="column">
-              {tabStrip}
-              {shown.length === 0 && <Text dimColor>{p.tab === 'active' ? s.noActive : s.noDone}</Text>}
-              {shown.map(row)}
-              {clearDone}
-            </Box>
-          )}
-        </Box>
+        )}
         {showTimeline && (
           <Box key="sec-timeline" {...FRAME}>
             {timelineToggle}
             {p.isTimelineOpen && timelineRows()}
           </Box>
         )}
-        <Box key="sec-files" {...FRAME}>
-          {filesHeader}
-          {searchRow}
-          {filesBody}
-        </Box>
+        {showFiles && (
+          <Box key="sec-files" {...FRAME}>
+            {filesHeader}
+            {searchRow}
+            {filesBody}
+          </Box>
+        )}
+        {isAllHidden && <Text dimColor>{s.allHidden}</Text>}
       </Box>
     )
   })

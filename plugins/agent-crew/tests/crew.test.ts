@@ -300,3 +300,63 @@ test('a freshly touched file shimmers on the desktop', async ($, on) => {
   expect(drawn).toContain('linearGradient')
   expect(drawn).toContain('animateTransform')
 })
+
+test('cleared agents stay gone when the engine list still holds them', async ($, on) => {
+  engine(on, [{ id: 'x9', type: 'general-purpose', description: 'Fork aus Skill', status: 'completed' }])
+  await start($)
+  let ui = await mount($, 'desktop')
+  await ui.press({ key: 'tab-done' })
+  expect(await ui.find({ key: 'd-x9' })).toBeDefined()
+  await ui.press({ key: 'clear' })
+  await ui.unmount()
+  await $.command.run({ command: 'crew', args: '' } as never)
+  ui = await mount($, 'desktop')
+  expect(await ui.find({ key: 'clear' })).toBeUndefined()
+})
+
+test('grep -n and sed -n count the file they read', async ($, on) => {
+  engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: "grep -n 'foo' src/app.ts" } as never)
+  await $.tool.call({ tool: 'Bash', command: "sed -n '1,40p' src/utils.ts" } as never)
+  await $.tool.call({ tool: 'Bash', command: 'head -n 20 README.md' } as never)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeDefined()
+  expect(await ui.find({ key: 'file-/work/src/utils.ts' })).toBeDefined()
+  expect(await ui.find({ key: 'file-/work/README.md' })).toBeDefined()
+})
+
+test('subagents and files can each be hidden', { options: { showAgents: false, showFiles: false } }, async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Etwas tun', 'general-purpose')
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(await ui.find({ key: 'd-a1' })).toBeUndefined()
+    expect(await ui.find({ key: 'file-/work/src/app.ts' })).toBeUndefined()
+    expect(JSON.stringify(await ui.drawn())).toContain('Kontext')
+  }
+})
+
+test('the usage section shows only the meters the options keep', { options: { usageContext: false, usageWeek: false } }, async ($, on) => {
+  engine(on)
+  await start($)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ text: /Kontext/ })).toBeUndefined()
+  expect(await ui.find({ text: /5 Std\./ })).toBeDefined()
+  expect(await ui.find({ text: /Woche/ })).toBeUndefined()
+})
+
+test('the settings pane groups sections and usage meters', async ($, on) => {
+  const { configSets } = engine(on)
+  await start($)
+  const settings = await $.ui.mount({ plugin: 'agent-crew', surface: 'terminal', component: 'Pane', requestId: 'agent-crew-settings', props: SETTINGS_PROPS })
+  const drawn = JSON.stringify(await settings.drawn())
+  expect(drawn).toContain('Abschnitte')
+  expect(drawn).toContain('Wochenlimit')
+  await settings.press({ key: 'set-showFiles' })
+  expect(configSets.at(-1)).toEqual({ key: 'agent-crew.showFiles', value: false })
+  const crew = await mount($, 'terminal')
+  expect(await crew.find({ key: 'files-toggle' })).toBeUndefined()
+})
