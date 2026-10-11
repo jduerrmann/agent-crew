@@ -52,8 +52,11 @@ export type CrewTab = 'active' | 'done'
 /** Steps done of planned, and the one under way. */
 export type CrewReport = { done: number; total: number; note?: string }
 
-/** A task an agent keeps through `TaskCreate` and `TaskUpdate`, as far as its calls tell. */
-export type CrewTask = { id: string; subject: string; activeForm?: string; status: 'pending' | 'in_progress' | 'completed' }
+/**
+ * A task of the session's shared list, kept through `TaskCreate` and `TaskUpdate` as far as the calls tell:
+ * `agent` made it (`main` for the main chat), `owner` was given it by an update.
+ */
+export type CrewTask = { id: string; subject: string; activeForm?: string; status: 'pending' | 'in_progress' | 'completed'; agent: string; owner?: string }
 
 /** One turn of the main chat, from `turn.start` to its `turn.complete`; open while it runs. */
 export type CrewMainTurn = { startedAt: number; endedAt?: number; reason?: 'answer' | 'aborted' | 'refusal' | 'error' }
@@ -183,8 +186,8 @@ declare module 'claude-code' {
       typeColors: Record<string, string>
       /** The main chat's turns, oldest first, for the timeline: when each began and ended, and how. */
       mainTurns: CrewMainTurn[]
-      /** Each agent's tasks from `TaskCreate`/`TaskUpdate`, by agent id (`main` for the main chat). */
-      taskLists: Record<string, CrewTask[]>
+      /** The session's tasks from `TaskCreate`/`TaskUpdate`, one list for all agents, as the engine keeps them. */
+      tasks: CrewTask[]
       /** The main chat's progress through its to-do list, for the timeline; null without one. */
       mainReport: CrewReport | null
     }

@@ -9,7 +9,7 @@ import type { SearchBoxProps } from './searchbox'
 import { applyNumstat, filesBeneath, folderKeys, folderOf, inside, isNewer, keyOf, mayChange, openCommand, parseStatus, posix, rawGithubUrl, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
 import type { TreeRow } from './files'
 import type { HotSeg, HotspotProps } from './hotspot'
-import { applyTask, isTodoTool, reportOf, todoReport } from './progress'
+import { applyTask, holderOf, isTodoTool, taskIdOf, tasksReport, todoReport } from './progress'
 import type { Tab, TabsProps } from './tabs'
 
 // One pane for the session's crew and what it touched. Above: every subagent,
@@ -43,7 +43,7 @@ const tree = atom({ plugin: 'agent-crew', key: 'tree' } as const, null)
 const updateInfo = atom({ plugin: 'agent-crew', key: 'update' } as const, null)
 const typeColors = atom({ plugin: 'agent-crew', key: 'typeColors' } as const, {})
 const mainTurns = atom({ plugin: 'agent-crew', key: 'mainTurns' } as const, [])
-const taskLists = atom({ plugin: 'agent-crew', key: 'taskLists' } as const, {})
+const tasks = atom({ plugin: 'agent-crew', key: 'tasks' } as const, [])
 const mainReport = atom({ plugin: 'agent-crew', key: 'mainReport' } as const, null)
 
 // The plugin's options, set by register on every (re)load.
@@ -1005,31 +1005,48 @@ const stepReport =
     return { done: total ? Math.min(total, done) : done, total, ...(note ? { note } : {}) }
   }
 
-/** Agents whose task lists are kept: the newest this many. */
-const MAX_TASK_AGENTS = 100
-
-// The to-do list an agent keeps, read from its own calls: TodoWrite writes the
-// whole list, TaskCreate and TaskUpdate change one task of the list kept here.
-// A subagent's bar shows it; the main chat's shows in the timeline.
-async function trackTodos($: EngineInterface, tool: string, input: Loose, out: Loose | undefined, agent: string): Promise<void> {
-  let report: CrewReport | undefined
-  if (tool === 'TodoWrite') report = todoReport(input)
-  else {
-    let tasks: CrewTask[] = []
-    await update($, taskLists, all => {
-      tasks = applyTask(all[agent] ?? [], tool, input, out)
-      const rest = Object.entries(all).filter(([k]) => k !== agent)
-      return Object.fromEntries([...rest, [agent, tasks]].slice(-MAX_TASK_AGENTS))
-    })
-    report = reportOf(tasks)
-  }
-  if (agent === 'main') {
+// An agent's progress from its list, or none when the list is empty: then a
+// subagent's bar goes back to the estimate, and the main chat's row to its name.
+async function setReport($: EngineInterface, holder: string, report: CrewReport | undefined): Promise<void> {
+  if (holder === 'main') {
     await update($, mainReport, () => report ?? null)
     const at = await $.clock.now()
     await update($, now, () => at)
     return
   }
-  if (report) await update($, runs, list => list.map(r => (r.agentId === agent ? { ...r, report } : r)))
+  await update($, runs, list =>
+    list.map(r => {
+      if (r.agentId !== holder) return r
+      const { report: _gone, ...rest } = r
+      return report ? { ...rest, report } : rest
+    }),
+  )
+}
+
+// The to-do list an agent keeps, read from its calls: TodoWrite writes that
+// agent's whole list. TaskCreate and TaskUpdate change one task of the session's
+// shared list, which any agent may update and an update may give to another
+// (`owner`); a task counts for its owner, else for its maker. A subagent's bar
+// shows its share; the main chat's shows in the timeline.
+async function trackTodos($: EngineInterface, tool: string, input: Loose, out: Loose | undefined, agent: string): Promise<void> {
+  if (tool === 'TodoWrite') {
+    if (Array.isArray(input.todos)) await setReport($, agent, todoReport(input))
+    return
+  }
+  const list = await read($, runs)
+  // An owner as the engine names it: an agent's id or its name.
+  const resolve = (owner: string): string => list.find(r => r.agentId === owner || (r.name && r.name === owner))?.agentId ?? owner
+  const id = taskIdOf(tool, input, out)
+  let before: CrewTask[] = []
+  let after: CrewTask[] = []
+  await update($, tasks, all => {
+    before = all
+    after = applyTask(all, tool, input, out, agent)
+    return after
+  })
+  // Who held the task before and who holds it now: each one's share is counted anew.
+  const holders = new Set([...before, ...after].filter(t => t.id === id).map(t => holderOf(t, resolve)))
+  for (const holder of holders) await setReport($, holder, tasksReport(after, holder, resolve))
 }
 
 async function record($: EngineInterface, tool: string, input: Loose, out: Loose | undefined, isOk: boolean, agentId: string | undefined): Promise<void> {
@@ -1722,7 +1739,10 @@ type FileView = {
 
 const UNTOUCHED_COLOR = '#8a8a86'
 
-const isChanged = (v: FileView): boolean => Boolean(v.gitFile || (v.file && (v.file.writes > 0 || v.file.commit)))
+// Changed as git sees it now, or committed in the session: a file written and
+// restored since is not. Outside a repository there is no git to ask, and a
+// write counts.
+const isChanged = (v: FileView, hasGit: boolean): boolean => Boolean(v.gitFile || v.file?.commit || (!hasGit && v.file && v.file.writes > 0))
 
 /** Gone from the working tree, as git sees it: drawn as a red ✗. */
 const isDeleted = (v: FileView): boolean => Boolean(v.gitFile && !v.gitFile.code.includes('?') && v.gitFile.code.includes('D'))
@@ -1781,7 +1801,7 @@ const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: Cr
     }
   }
   const out = [...map.values()]
-  if (filter === 'changed') return out.filter(isChanged)
+  if (filter === 'changed') return out.filter(v => isChanged(v, Boolean(g)))
   // Git's changes no agent touched (another editor, a Bash command) are left to `changed`.
   return filter === 'activity' ? out.filter(v => v.file) : out
 }

@@ -12,7 +12,7 @@ updated: 2026-10-11
 **Context:** the tree got long, and the user wanted filetree's navigation without its clutter.
 
 **Decision:**
-- **Filters:** *Activity* (default) shows the files the session's agents read, changed or committed, also the ones read and changed since. *Changes* shows what git reports, whoever made it, and the session's commits. *All* shows every file under the root, through `git ls-files` or a bounded walk.
+- **Filters:** *Activity* (default) shows the files the session's agents read, changed or committed, also the ones read and changed since. *Changes* shows what git reports now, whoever made it, and the session's commits; a file written and restored since leaves it. Outside a repository there is no git to ask, and a file written in the session counts. *All* shows every file under the root, through `git ls-files` or a bounded walk.
 - **Activity leaves git's other changes out** (the user's choice): before, it held git's changes as well, so with every read file also changed it showed the same as *Changes*. A change made by a Bash command counts as git's: the mod cannot tell which files a command wrote ([shell-parsing-heuristic](../limits/shell-parsing-heuristic.md)), so it shows under *Changes* only.
 - **Folders:** they start shut. A search opens the folders that hold hits. A freshly touched file opens its folders for its shimmer, about 8 s, unless a press shut them since. ⊞/⊟ open or shut every folder in view, and shut means shut. There is no ↻: git is read often enough ([git-read-schedule](git-read-schedule.md)).
 - **Narrow panes:** the header's filters wrap to a second line. The legend breaks only between entries: a no-break space ties each sign to its word.

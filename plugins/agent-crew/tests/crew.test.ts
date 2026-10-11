@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import { textWidth } from '../hooks/crab'
 import { isNewer } from '../hooks/files'
-import { applyTask, reportOf, todoReport } from '../hooks/progress'
+import { applyTask, holderOf, reportOf, tasksReport, todoReport } from '../hooks/progress'
 import type { Engine } from 'claude-code/testing'
 import type { AgentInfo, On } from 'claude-code'
 
@@ -1511,14 +1511,98 @@ test('reading to-do lists: TodoWrite and the task calls, as pure functions', () 
   // A long step is cut to one line of 80 characters.
   expect(todoReport({ todos: [{ content: 'x', activeForm: `${'y'.repeat(100)}\nz`, status: 'in_progress' }] })?.note?.length).toBe(80)
   // The id comes from the result where there is one.
-  let list = applyTask([], 'TaskCreate', { subject: 'Testen', activeForm: 'Testet' }, { task: { id: '7', subject: 'Testen' } })
-  expect(list).toEqual([{ id: '7', subject: 'Testen', activeForm: 'Testet', status: 'pending' }])
-  list = applyTask(list, 'TaskUpdate', { taskId: '7', status: 'in_progress' }, undefined)
-  expect(reportOf(list)).toEqual({ done: 0, total: 1, note: 'Testet' })
+  let list = applyTask([], 'TaskCreate', { subject: 'Testen', activeForm: 'Testet' }, { task: { id: '7', subject: 'Testen' } }, 'main')
+  expect(list).toEqual([{ id: '7', subject: 'Testen', activeForm: 'Testet', status: 'pending', agent: 'main' }])
+  // Any agent may update it, and an update may give it to another.
+  list = applyTask(list, 'TaskUpdate', { taskId: '7', status: 'in_progress', owner: 'a1' }, undefined, 'a2')
+  const self = (o: string) => o
+  expect(tasksReport(list, 'a1', self)).toEqual({ done: 0, total: 1, note: 'Testet' })
+  expect(tasksReport(list, 'main', self)).toBeUndefined()
+  // An empty owner hands it back to its maker.
+  expect(holderOf(applyTask(list, 'TaskUpdate', { taskId: '7', owner: '' }, undefined, 'a1')[0] as never, self)).toBe('main')
   // An unknown task or another tool changes nothing.
-  expect(applyTask(list, 'TaskUpdate', { taskId: '8', status: 'completed' }, undefined)).toEqual(list)
-  expect(applyTask(list, 'Read', { file_path: 'x' }, undefined)).toEqual(list)
-  expect(applyTask(list, 'TaskUpdate', { taskId: '7', status: 'deleted' }, undefined)).toEqual([])
+  expect(applyTask(list, 'TaskUpdate', { taskId: '8', status: 'completed' }, undefined, 'main')).toEqual(list)
+  expect(applyTask(list, 'Read', { file_path: 'x' }, undefined, 'main')).toEqual(list)
+  expect(applyTask(list, 'TaskUpdate', { taskId: '7', status: 'deleted' }, undefined, 'a1')).toEqual([])
+  expect(reportOf([])).toBeUndefined()
+})
+
+test('a task given to another agent counts for its new owner, whoever updates it', async ($, on) => {
+  const { clock } = engine(on)
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  await start($)
+  await $.turn.start({ text: 'Los', turnId: 't1' } as never)
+  await spawn($, 'Umbau Auth', 'general-purpose')
+  await spawn($, 'Prüfen', 'general-purpose')
+  // The main chat makes the task: it counts for the main chat.
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Testen', description: 'Testen', activeForm: 'Testen läuft' } as never)
+  await clock.advance(1000)
+  expect(await timelineOf($, 'terminal')).toContain('Hauptchat 0/1')
+  // Given to a1: it leaves the main chat's count and joins a1's.
+  await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', owner: 'a1' } as never)
+  let tl = await timelineOf($, 'terminal')
+  expect(tl).toContain('Hauptchat')
+  expect(tl).not.toContain('0/1')
+  // a1 works on it: its own update lands.
+  await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', status: 'in_progress', agentId: 'a1' } as never)
+  let ui = await mount($, 'terminal')
+  expect(await ui.find({ text: /0\/1 · Testen läuft/ })).toBeDefined()
+  await ui.unmount()
+  // Handed on to a2 by a1: a1's bar goes back to the estimate, a2's shows the task.
+  await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', owner: 'a2', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', status: 'completed', agentId: 'a2' } as never)
+  ui = await mount($, 'terminal')
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('1/1')
+  expect(drawn).not.toContain('0/1')
+  await ui.unmount()
+  tl = await timelineOf($, 'terminal')
+  expect(tl).not.toContain('/1')
+})
+
+test('an emptied list takes the bar back to the estimate: TodoWrite with no steps, or the last task deleted', async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Umbau Auth', 'general-purpose')
+  await $.tool.call({ tool: 'TodoWrite', ...todos(['Lesen', 'Umbauen', 'Testen'], 1), agentId: 'a1' } as never)
+  let ui = await mount($, 'terminal')
+  expect(await ui.find({ text: /1\/3 · Umbauen läuft/ })).toBeDefined()
+  await ui.unmount()
+  await $.tool.call({ tool: 'TodoWrite', todos: [], agentId: 'a1' } as never)
+  ui = await mount($, 'terminal')
+  expect(await ui.find({ text: /1\/3/ })).toBeUndefined()
+  await ui.unmount()
+  // The same through the task calls: the last one deleted.
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Testen', description: 'Testen', activeForm: 'Testen läuft', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', status: 'in_progress', agentId: 'a1' } as never)
+  ui = await mount($, 'terminal')
+  expect(await ui.find({ text: /0\/1 · Testen läuft/ })).toBeDefined()
+  await ui.unmount()
+  await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', status: 'deleted', agentId: 'a1' } as never)
+  ui = await mount($, 'terminal')
+  expect(await ui.find({ text: /0\/1/ })).toBeUndefined()
+})
+
+test('a file changed and restored leaves Changes, and stays in Activity', async ($, on) => {
+  const state = { status: '## main\u0000 M src/app.ts\u0000' }
+  const git = fakeGit({ head: 'a'.repeat(40) })
+  const { clock } = engine(on, [], argv => (argv.includes('status') ? { exitCode: 0, stdout: state.status } : git(argv)))
+  await start($)
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'a', new_string: 'b' } as never)
+  await clock.advance(10_000)
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'files-filter-changed' })
+  await expandAll(ui)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  // Restored: git sees it clean again.
+  state.status = '## main\u0000'
+  await $.tool.call({ tool: 'Bash', command: 'git restore src/app.ts' } as never)
+  await clock.advance(10_000)
+  await expandAll(ui)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(false)
+  await ui.press({ key: 'files-filter-activity' })
+  await expandAll(ui)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
 })
 
 test('a press shuts a folder a fresh file holds open, and it stays shut', async ($, on) => {
