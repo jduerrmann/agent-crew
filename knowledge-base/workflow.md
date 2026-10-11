@@ -41,7 +41,7 @@ The pictures in `media/` come from `tests/media.test.ts`: each test plays a made
 
 ## Release
 
-- **Version:** bump it in three places together: `plugins/agent-crew/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` and the badge at the top of `README.md`. The bump waits for the user's OK ([versioning](decisions/versioning.md)).
+- **Version:** new features bump the minor version, fixes the patch version. Bump it in three places together: `plugins/agent-crew/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` and the badge at the top of `README.md`. The bump waits for the user's OK ([versioning-minor-and-patch](decisions/versioning-minor-and-patch.md)).
 - **Announcement:** pushing `plugin.json` with a new version announces the release to every installed copy ([update-check](decisions/update-check.md)).
 - **New or changed option:** it goes into all of these:
   - `plugin.json` (`userConfig`)

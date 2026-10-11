@@ -1,13 +1,15 @@
 ---
 type: decision
 area: release
-status: active
+status: superseded
 date: 2026-10-11
 decided-by: agreed
 updated: 2026-10-11
 ---
 
 # Every user-visible release bumps the minor version
+
+> **Superseded** by [versioning-minor-and-patch](versioning-minor-and-patch.md): the user wants fixes as patch versions.
 
 **Context:** marketplace installs only update when the version goes up ([marketplace-install-is-snapshot](../limits/marketplace-install-is-snapshot.md)), and the update check announces whatever `plugin.json` on GitHub says ([update-check](update-check.md)).
 

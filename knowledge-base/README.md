@@ -83,7 +83,8 @@ Rules:
 
 ### Release and process
 - [update-check](decisions/update-check.md): daily check against GitHub `plugin.json`; marketplace installs update, folder copies get `git pull`
-- [versioning](decisions/versioning.md): minor bump per user-visible release, in plugin.json, marketplace.json and badge, after the user's OK
+- [versioning-minor-and-patch](decisions/versioning-minor-and-patch.md): features bump the minor version, fixes the patch; plugin.json, marketplace.json, badge; user's OK (user)
+- [versioning](decisions/versioning.md): superseded; every user-visible release bumped the minor version
 - [load-from-working-copy](decisions/load-from-working-copy.md): the user runs the working copy via `CLAUDE_CODE_PLUGIN_DIRS`; no marketplace install
 - [license-polyform-noncommercial](decisions/license-polyform-noncommercial.md): PolyForm Noncommercial so nobody monetises it; savvy and filetree parts stay MIT
 - [repo-name](decisions/repo-name.md): repo and marketplace `agent-crew`, local folder stays `claude-mods`; commits as jduerrmann
