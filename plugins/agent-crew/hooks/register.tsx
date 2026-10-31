@@ -10,6 +10,7 @@ import { applyNumstat, filesBeneath, folderKeys, folderOf, inside, isNewer, keyO
 import type { TreeRow } from './files'
 import type { HotSeg, HotspotProps } from './hotspot'
 import { applyTask, holderOf, isTodoTool, taskIdOf, tasksReport, todoReport } from './progress'
+import { baseKey, remounts } from './remount'
 import type { Tab, TabsProps } from './tabs'
 
 // One pane for the session's crew and what it touched. Above: every subagent,
@@ -1846,6 +1847,10 @@ const MAX_FILE_ROWS = 80
 const plainSeg = (s: Seg): Seg => Object.fromEntries(Object.entries(s).filter(([, x]) => x !== undefined && x !== false)) as Seg
 const plainHot = (s: HotSeg): HotSeg => Object.fromEntries(Object.entries(s).filter(([, x]) => x !== undefined && x !== false)) as HotSeg
 
+// Every Client's key goes through `ck`: after a fault it names a fresh instance.
+const clientKeys = remounts()
+const ck = clientKeys.key
+
 // The shimmer's tones, after filetree's (Kurt Buhler, MIT): the base colour, then
 // three steps lighter for the band's edge, shoulder and crest. A deleted file
 // shimmers red and a new one blue, whatever its last touch was.
@@ -2279,7 +2284,7 @@ export const register: Register = (on, options) => {
       // so its press lands between redraws.
       const compactChip = Client ? (
         <Box key="band-compact-box" flexShrink={0} marginLeft={1}>
-          <Client key="band-compact" module="./hotspot.tsx" props={{ id: 'compact', line: [{ t: ' /compact ' }], bg: '#6b6b6833', hoverBg: '#6b6b6866' } satisfies HotspotProps} />
+          <Client key={ck('band-compact')} module="./hotspot.tsx" props={{ id: 'compact', line: [{ t: ' /compact ' }], bg: '#6b6b6833', hoverBg: '#6b6b6866' } satisfies HotspotProps} />
         </Box>
       ) : null
 
@@ -2293,7 +2298,7 @@ export const register: Register = (on, options) => {
         const s = tr()
         const hit = (key: string) => (
           <Box key={`${key}-hitbox`} position="absolute" top={0} left={0} right={0} bottom={0}>
-            <Client key={key} module="./hotspot.tsx" width="100%" height="100%" props={{ id: 'band', hoverBg: '#3a3a3826' } satisfies HotspotProps} />
+            <Client key={ck(key)} module="./hotspot.tsx" width="100%" height="100%" props={{ id: 'band', hoverBg: '#3a3a3826' } satisfies HotspotProps} />
           </Box>
         )
         const pictures = (
@@ -2331,7 +2336,7 @@ export const register: Register = (on, options) => {
             Client ? (
               <Box key={`band-row-${i}`} flexDirection="row">
                 <Box key={`band-cell-${i}`} flexGrow={1} flexShrink={1}>
-                  <Client key={`band-${i}`} module="./hotspot.tsx" width="100%" props={{ id: 'band', line: line.map(plainHot), hoverBg: '#3a3a3826' } satisfies HotspotProps} />
+                  <Client key={ck(`band-${i}`)} module="./hotspot.tsx" width="100%" props={{ id: 'band', line: line.map(plainHot), hoverBg: '#3a3a3826' } satisfies HotspotProps} />
                 </Box>
                 {kind === 'usage' ? compactChip : null}
               </Box>
@@ -2661,20 +2666,22 @@ export const register: Register = (on, options) => {
   // A click in one of the pane's Clients: a tab of the tab strip, or a row of
   // the file tree.
   on('ui.message', async ($, e, next) => {
+    // A Client remounted after a fault posts under its key's new generation.
+    const element = typeof e.element === 'string' ? baseKey(e.element) : undefined
     // The band's /compact: a dispatch of its own, as the pane's button does.
-    if (e.element === 'band-compact' && (e.data as { press?: unknown } | undefined)?.press === 'compact') {
+    if (element === 'band-compact' && (e.data as { press?: unknown } | undefined)?.press === 'compact') {
       $.clock.after(1, () => void $.command.run({ command: 'compact' }).catch(() => undefined))
       return {}
     }
     // A click on the band above the prompt brings the pane into view, never a
     // toggle. It opens in the answer to the click, so the host counts it as the
     // person's own open and places it at any width; this hook awaits it.
-    if (typeof e.element === 'string' && e.element.startsWith('band-') && (e.data as { press?: unknown } | undefined)?.press === 'band') {
+    if (element?.startsWith('band-') && (e.data as { press?: unknown } | undefined)?.press === 'band') {
       await showPane($)
       return {}
     }
-    if (e.requestId !== PANE || typeof e.element !== 'string' || !e.data || typeof e.data !== 'object') return next(e)
-    if (e.element === 'tabs') {
+    if (e.requestId !== PANE || element === undefined || !e.data || typeof e.data !== 'object') return next(e)
+    if (element === 'tabs') {
       await blurSearch($)
       const tab = (e.data as { tab?: unknown }).tab
       if (tab === 'active' || tab === 'done') await setPanel($, () => ({ tab }))
@@ -2682,17 +2689,17 @@ export const register: Register = (on, options) => {
     }
     // The desktop's click regions (hotspot.tsx): a tab, or an agent's row.
     const press = (e.data as { press?: unknown }).press
-    if (e.element.startsWith('tabhit-') && (press === 'active' || press === 'done')) {
+    if (element.startsWith('tabhit-') && (press === 'active' || press === 'done')) {
       await blurSearch($)
       await setPanel($, () => ({ tab: press }))
       return {}
     }
-    if (e.element.startsWith('rowhit-') && typeof press === 'string') {
+    if (element.startsWith('rowhit-') && typeof press === 'string') {
       await blurSearch($)
       await setPanel($, q => ({ expanded: q.expanded.includes(press) ? q.expanded.filter(x => x !== press) : [...q.expanded, press].slice(-20) }))
       return {}
     }
-    if (e.element === 'search') {
+    if (element === 'search') {
       const data = e.data as { query?: unknown; submit?: unknown; focus?: unknown }
       if (data.focus === true && !(await readPanel($)).isSearchFocused) await setPanel($, () => ({ isSearchFocused: true }))
       if (typeof data.query === 'string') {
@@ -2702,13 +2709,20 @@ export const register: Register = (on, options) => {
       if (typeof data.submit === 'string') await openFirstHit($, data.submit)
       return {}
     }
-    if (e.element.startsWith('rows-')) {
+    if (element.startsWith('rows-')) {
       await blurSearch($)
       const id = (e.data as { press?: unknown }).press
       const isOpen = (e.data as { isOpen?: unknown }).isOpen
       if (typeof id === 'string') await pressRow($, id, typeof isOpen === 'boolean' ? isOpen : undefined)
       return {}
     }
+    return next(e)
+  })
+
+  // A Client the host gave up on: the redraw the host makes next mounts a fresh
+  // one under the key's next generation (`ck`).
+  on('ui.fault', async ($, e, next) => {
+    clientKeys.fault(e.element)
     return next(e)
   })
 
@@ -2763,6 +2777,8 @@ export const register: Register = (on, options) => {
       const showTotals = opts.showTotals === true
       const showUsage = opts.showUsage !== false
       const showAgents = opts.showAgents !== false
+      // The section waits for the first subagent: empty tabs say nothing.
+      const isAgentsShown = showAgents && list.length > 0
       const showFiles = opts.showFiles !== false
       // Drawn again when a setting changes in the settings pane.
       await read($, settingsRev)
@@ -2826,7 +2842,7 @@ export const register: Register = (on, options) => {
                 hover={{ borderColor: isOn ? t.color : '#9a9a96' }}
               >
                 {Client ? (
-                  <Client key={`tabhit-${t.id}`} module="./hotspot.tsx" props={{ id: t.id, line: line.map(plainHot) } satisfies HotspotProps} />
+                  <Client key={ck(`tabhit-${t.id}`)} module="./hotspot.tsx" props={{ id: t.id, line: line.map(plainHot) } satisfies HotspotProps} />
                 ) : (
                   <Button key={`tab-${t.id}`} plain onPress={() => setPanel($, () => ({ tab: t.id as CrewTab }))}>
                     <Text color={isOn ? t.color : undefined} dimColor={!isOn}>
@@ -2850,7 +2866,7 @@ export const register: Register = (on, options) => {
           boxTabs
         ) : Client ? (
           <Client
-            key="tabs"
+            key={ck('tabs')}
             module="./tabs.tsx"
             width="100%"
             height={3}
@@ -3107,7 +3123,7 @@ export const register: Register = (on, options) => {
         !p.isFilesCollapsed && allViews.length > 0 ? (
           Client ? (
             <Client
-              key="search"
+              key={ck('search')}
               module="./searchbox.tsx"
               width="100%"
               props={{ value: p.fileQuery ?? '', placeholder: s.search, hits: query ? s.hits(views.length) : '', line: '#6b6b68', accent: CLAY, isFocused: p.isSearchFocused === true } satisfies SearchBoxProps}
@@ -3255,7 +3271,7 @@ export const register: Register = (on, options) => {
       const rowsClient = (key: string, rows: TreeRow[], base = 0) =>
         Client && rows.length > 0 ? (
           <Client
-            key={key}
+            key={ck(key)}
             module="./filerows.tsx"
             width="100%"
             props={{ rows: fileRowsOf(rows, base).map(r => ({ ...r, left: r.left.map(plainSeg), right: r.right.map(plainSeg) })), tones: SHIMMER, hoverBg: '#3a3a3826' } satisfies FileRowsProps}
@@ -3384,7 +3400,7 @@ export const register: Register = (on, options) => {
           const mark =
             run.status === 'running' && Client ? (
               <Box key={`mark-${run.id}`} flexShrink={0} width={3} justifyContent="center">
-                <Client key={`pulse-${run.id}`} module="./hotspot.tsx" props={{ line: [{ t: '●', c: colorOf(run), pulse: true }] } satisfies HotspotProps} />
+                <Client key={ck(`pulse-${run.id}`)} module="./hotspot.tsx" props={{ line: [{ t: '●', c: colorOf(run), pulse: true }] } satisfies HotspotProps} />
               </Box>
             ) : (
               <Box key={`mark-${run.id}`} flexShrink={0}>
@@ -3397,7 +3413,7 @@ export const register: Register = (on, options) => {
           const hit = Client ? (
             <Box key={`hitbox-${run.id}`} position="absolute" top={0} left={0} right={0} bottom={0}>
               <Client
-                key={`rowhit-${run.id}`}
+                key={ck(`rowhit-${run.id}`)}
                 module="./hotspot.tsx"
                 width="100%"
                 height="100%"
@@ -3467,7 +3483,7 @@ export const register: Register = (on, options) => {
                 <Svg source={costSvg(W, main, subs, list.length)} alt={`${s.main} ≈${fmtCost(main.cost)}, ${s.subagents(list.length)} ≈${fmtCost(subs.cost)}`} width={W} height={COST_H} />
               </Box>
             )}
-            {showAgents &&
+            {isAgentsShown &&
               (p.isCompact ? (
                 agentsCompact
               ) : (
@@ -3678,7 +3694,7 @@ export const register: Register = (on, options) => {
               </Box>
             </Box>
           )}
-          {showAgents && (
+          {isAgentsShown && (
             <Box key="sec-agents" {...FRAME}>
               <Box flexDirection="row" justifyContent="flex-end">
                 {toggleCompact}

@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import { textWidth } from '../hooks/crab'
 import { isNewer } from '../hooks/files'
 import { applyTask, holderOf, reportOf, tasksReport, todoReport } from '../hooks/progress'
+import { MAX_REMOUNTS, baseKey, remounts } from '../hooks/remount'
 import type { Engine } from 'claude-code/testing'
 import type { AgentInfo, On } from 'claude-code'
 
@@ -1164,6 +1165,40 @@ test('on the desktop a running dot pulses in a Client, in its row and on the Act
   expect(pulses(await drawnPart(desk, 'tabbox-active'))).toBe(false)
   await showTab(desk, 'desktop', 'done')
   expect(pulses(await drawnPart(desk, 'row-a1'))).toBe(false)
+})
+
+test('a Client the host gave up on gets a fresh key, a few times at most', () => {
+  // The host shows its error under the old key until a reload: the next drawing
+  // takes a new one, so a fresh instance mounts there.
+  const keys = remounts()
+  expect(keys.key('rowhit-a1')).toBe('rowhit-a1')
+  keys.fault('rowhit-a1')
+  expect(keys.key('rowhit-a1')).toBe('rowhit-a1~1')
+  // The new instance's fault moves it on; the other Clients keep their keys.
+  keys.fault('rowhit-a1~1')
+  expect(keys.key('rowhit-a1')).toBe('rowhit-a1~2')
+  expect(keys.key('tabhit-active')).toBe('tabhit-active')
+  // Its presses come back under the key it stands for.
+  expect(baseKey('rowhit-a1~2')).toBe('rowhit-a1')
+  expect(baseKey('band-compact')).toBe('band-compact')
+  // A module that fails every time stops getting new instances.
+  for (let i = 0; i < 10; i++) keys.fault('rowhit-a1')
+  expect(keys.key('rowhit-a1')).toBe(`rowhit-a1~${MAX_REMOUNTS}`)
+})
+
+test('the agents section waits for the first subagent', async ($, on) => {
+  engine(on)
+  await start($)
+  const uis = await Promise.all(SURFACES.map(surface => mount($, surface)))
+  for (const ui of uis) {
+    expect(await ui.find({ key: 'sec-agents' })).toBeUndefined()
+    expect(await ui.find({ key: 'compact' })).toBeUndefined()
+  }
+  await spawn($, 'Felder gruppieren', 'Explore')
+  for (const ui of uis) {
+    expect(await ui.find({ key: 'sec-agents' })).toBeDefined()
+    expect(await hasRun(ui, 'a1')).toBe(true)
+  }
 })
 
 test('crabMotion light keeps the crabs on their own animation, without the flip book', { options: { crabMotion: 'light' } }, async ($, on) => {

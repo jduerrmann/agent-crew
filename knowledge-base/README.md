@@ -25,6 +25,7 @@ Rules:
 - [surface-features-vary](limits/surface-features-vary.md): Svg, Client, Markdown and Input can be missing (VS Code, mobile); feature-test, always a fallback
 - [client-no-blur-event](limits/client-no-blur-event.md): a Client never hears it lost the keys; the hooks module guesses focus from other input
 - [client-posts-per-frame](limits/client-posts-per-frame.md): Client posts arrive once per frame and props trail typing; props must be plain data
+- [client-fault-sticks](limits/client-fault-sticks.md): a Client that missed its render shows the host's error until reload; `ui.fault` gives its key a new generation
 - [redraw-drops-button-clicks](limits/redraw-drops-button-clicks.md): a redraw between press and release loses a Button click; rows and tabs are hotspot.tsx Clients
 - [svg-redraw-restarts-animation](limits/svg-redraw-restarts-animation.md): desktop reloads every Svg per redraw; dots pulse in Clients, crabs walk as a 4/s flip book, bar glides 1 s
 
@@ -72,6 +73,7 @@ Rules:
 - [timeline-main-chat](decisions/timeline-main-chat.md): main chat's turns in a row atop the timeline, on the axis even with `timelineMain` off (user)
 - [agent-type-look](decisions/agent-type-look.md): a colour per type, new ones kept in the store; detective for general-purpose; no savvy crabs; no forced type (user)
 - [progress-from-todo-lists](decisions/progress-from-todo-lists.md): bars and main row read TodoWrite/TaskCreate/TaskUpdate; no step tool of our own, no tokens (user)
+- [agents-section-waits](decisions/agents-section-waits.md): the agents section (tabs, Compact) appears only once a subagent ran; empty tabs said nothing (user)
 - [agent-bar-no-made-up-progress](decisions/agent-bar-no-made-up-progress.md): superseded; a moving band instead of a fill, found too restless
 
 ### Files
