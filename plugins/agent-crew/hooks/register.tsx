@@ -1842,6 +1842,8 @@ const folderSummary = (inside: FileView[], byAgent: Map<string, CrewRun>, focus?
 }
 
 const MAX_FILE_ROWS = 80
+// Rows a filerows.tsx Client draws at most; the rest go to the next one.
+const ROWS_PER_CLIENT = 20
 
 // A Client's props are plain data: a segment carries only the fields it sets.
 const plainSeg = (s: Seg): Seg => Object.fromEntries(Object.entries(s).filter(([, x]) => x !== undefined && x !== false)) as Seg
@@ -3268,15 +3270,22 @@ export const register: Register = (on, options) => {
             },
           ]
         })
-      const rowsClient = (key: string, rows: TreeRow[], base = 0) =>
-        Client && rows.length > 0 ? (
+      // A Client's tree may serialize to 100,000 characters at most, which a page of
+      // rows with agents, badges and shimmer can pass: a Client holds a share of
+      // them, `rows-a`, `rows-a-2`, …, one below the other.
+      const rowsClient = (key: string, rows: TreeRow[], base = 0) => {
+        if (!Client || rows.length === 0) return null
+        const specs = fileRowsOf(rows, base).map(r => ({ ...r, left: r.left.map(plainSeg), right: r.right.map(plainSeg) }))
+        const parts = Array.from({ length: Math.ceil(specs.length / ROWS_PER_CLIENT) }, (_, i) => specs.slice(i * ROWS_PER_CLIENT, (i + 1) * ROWS_PER_CLIENT))
+        return parts.map((part, i) => (
           <Client
-            key={ck(key)}
+            key={ck(i === 0 ? key : `${key}-${i + 1}`)}
             module="./filerows.tsx"
             width="100%"
-            props={{ rows: fileRowsOf(rows, base).map(r => ({ ...r, left: r.left.map(plainSeg), right: r.right.map(plainSeg) })), tones: SHIMMER, hoverBg: '#3a3a3826' } satisfies FileRowsProps}
+            props={{ rows: part, tones: SHIMMER, hoverBg: '#3a3a3826' } satisfies FileRowsProps}
           />
-        ) : null
+        ))
+      }
 
       // Without a Client: a Button a row, the same presses.
       const buttonRow = (r: TreeRow) => {

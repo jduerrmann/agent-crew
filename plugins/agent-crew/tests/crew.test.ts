@@ -461,6 +461,36 @@ test('a freshly touched file shimmers on the desktop', async ($, on) => {
   expect(drawn).toContain('"sh":"write"')
 })
 
+// The row ids a filerows Client was handed, found by its key in the pane's tree.
+const rowIds = (tree: unknown, key: string): string[] => {
+  if (!tree || typeof tree !== 'object') return []
+  const props = (tree as { props?: { key?: string; props?: { rows?: { id: string }[] }; children?: unknown } }).props
+  if (props?.key === key) return (props.props?.rows ?? []).map(r => r.id)
+  const kids = (tree as { children?: unknown }).children ?? props?.children
+  return (Array.isArray(kids) ? kids : [kids]).flatMap(k => rowIds(k, key))
+}
+
+test('a page of fresh files with long names stays within what a rows Client may draw', async ($, on) => {
+  engine(on)
+  await start($)
+  const dir = '/work/packages/configurator-core/src/components/editor'
+  for (let i = 0; i < 80; i++) await $.tool.call({ tool: 'Edit', file_path: `${dir}/ConfiguratorCorePropertyPanelSection${i}.tsx`, old_string: 'a', new_string: 'b' } as never)
+  const ui = await mount($, 'desktop')
+  await expandAll(ui)
+  // The shimmer's band moves into the names, which splits them into colours.
+  await ui.advance(270)
+  const tree = await ui.drawn()
+  // One rows Client faulted on its tree: the host's limit is 100,000 characters.
+  for (const key of ['rows-a', 'rows-a-2', 'rows-a-3', 'rows-a-4']) {
+    expect(rowIds(tree, key).length).toBeGreaterThan(0)
+    expect(JSON.stringify(await ui.drawn({ in: key })).length).toBeLessThan(100000)
+  }
+  // A row in a later share still opens its card.
+  const id = rowIds(tree, 'rows-a-2')[0] ?? ''
+  await ui.pointer({ type: 'down', x: 4, y: 0, button: 'left', in: 'rows-a-2' })
+  expect(await ui.find({ key: `open-${id}` })).toBeDefined()
+})
+
 test('cleared agents stay gone when the engine list still holds them', async ($, on) => {
   engine(on, [{ id: 'x9', type: 'general-purpose', description: 'Fork aus Skill', status: 'completed' }])
   await start($)

@@ -58,12 +58,21 @@ const FileRows: ClientModule<FileRowsProps, Local> = (props, surface) => {
         </Text>
       )
     }
+    // Letters of one colour share a Text: one a letter ran a page of fresh names
+    // past the 100,000 characters a Client's tree may serialize to.
     const chars = [...s.t]
+    const runs: { t: string; c: string }[] = []
+    chars.forEach((ch, i) => {
+      const c = shimmer(i, state.phase, chars.length, palette)
+      const last = runs[runs.length - 1]
+      if (last && last.c === c) last.t += ch
+      else runs.push({ t: ch, c })
+    })
     return (
       <Text key={k} bold={s.b}>
-        {chars.map((ch, i) => (
-          <Text key={`${k}-${i}`} color={shimmer(i, state.phase, chars.length, palette)}>
-            {ch}
+        {runs.map((run, i) => (
+          <Text key={i} color={run.c}>
+            {run.t}
           </Text>
         ))}
       </Text>
