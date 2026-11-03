@@ -28,6 +28,7 @@ Rules:
 - [client-tree-bounds](limits/client-tree-bounds.md): a Client's tree: 20,000 nodes, 32 deep, 100,000 chars, or it unmounts; file rows split 20 a Client
 - [client-fault-sticks](limits/client-fault-sticks.md): a Client that missed its render shows the host's error until reload; `ui.fault` gives its key a new generation
 - [redraw-drops-button-clicks](limits/redraw-drops-button-clicks.md): a redraw between press and release loses a Button click; rows and tabs are hotspot.tsx Clients
+- [client-region-over-picture](limits/client-region-over-picture.md): a click region over a picture counts code-font rows, not pixels; it doesn't grow with it, one region a row
 - [svg-redraw-restarts-animation](limits/svg-redraw-restarts-animation.md): desktop reloads every Svg per redraw; dots pulse in Clients, crabs walk as a 4/s flip book, bar glides 1 s
 
 ### Host API
@@ -65,7 +66,7 @@ Rules:
 - [own-mod-one-pane](decisions/own-mod-one-pane.md): a mod of our own, not savvy; one pane for agents, timeline, files, usage; one hooks module
 - [configurable-sections](decisions/configurable-sections.md): framed sections, each with a switch; new features come with an option
 - [svg-desktop-text-terminal](decisions/svg-desktop-text-terminal.md): SVG with CSS animation on desktop, the same content as text in the terminal; timeline folds pauses
-- [narrow-pictures-wrap](decisions/narrow-pictures-wrap.md): in a narrow pane usage meters wrap into rows, cost rows put tokens beneath; nothing overlaps
+- [narrow-pictures-wrap](decisions/narrow-pictures-wrap.md): in a narrow pane usage meters wrap into rows, a picture and click region each in the band; cost tokens go beneath (user)
 - [prompt-band](decisions/prompt-band.md): band above the prompt: crabs and counts, bars, usage rings, each an option; click opens the pane; stacks over others (user)
 - [settings-tab](decisions/settings-tab.md): `/crew-settings` tab and ⚙ button, written through `$.config.set` like `/config`
 - [cost-is-an-estimate](decisions/cost-is-an-estimate.md): cost marked `≈` from `PRICES`; the cost section is off by default (user)

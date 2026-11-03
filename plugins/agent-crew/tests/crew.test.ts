@@ -1561,6 +1561,62 @@ test('a narrow desktop pane wraps the usage meters and puts the cost rows’ tok
   expectLaidOut(narrowCost.source)
 })
 
+test('a narrow desktop band draws each row of meters with a click region of its own', { options: { bandUsage: true } }, async ($, on) => {
+  const { clock, opened } = engine(on)
+  beneathBand(on)
+  await start($)
+  const resetsAt = new Date((await clock.now()) + 58 * 60_000).toISOString()
+  await $.session.measure({ context: { percent: 25, tokens: 250_000, window: 1_000_000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 4, resetsAt }, { kind: 'seven_day', percentUsed: 41, resetsAt }], changed: ['context', 'rateLimits'] } as never)
+  const rows = async (columns: number) => {
+    const band = (await mountBand($, 'desktop', { bodyColumns: columns })) as Band
+    const pictures = (await picturesIn(band, 'band-usage')).filter(s => s.includes('stroke-dasharray'))
+    return { band, pictures }
+  }
+  // Wide: one row, one region.
+  const wide = await rows(120)
+  expect(wide.pictures.length).toBe(1)
+  expect(wide.pictures[0]).toContain('Woche')
+  await wide.band.unmount()
+  // Narrow: a picture a row, each the height of one row, each meter in one of them.
+  const narrow = await rows(30)
+  expect(narrow.pictures.length).toBeGreaterThan(1)
+  for (const source of narrow.pictures) expect(source).toMatch(/<svg[^>]* height="44"/)
+  expect(narrow.pictures.join('')).toContain('Kontext')
+  expect(narrow.pictures.join('')).toContain('Woche')
+  // A press on the last row opens the pane, as one on the first does.
+  opened.length = 0
+  const last = narrow.pictures.length
+  await narrow.band.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: `band-${last}` })
+  await clock.advance(10)
+  expect(opened).toEqual(['agent-crew'])
+  // Each region reaches a row below its picture, the last one too with nothing beneath the band.
+  const drawn = await narrow.band.drawn()
+  for (let i = 1; i <= last; i++) expect(bottomOf(drawn, `band-${i}-hitbox`)).toBe(-1)
+})
+
+// A drawn Box's `bottom` offset, by its key.
+function bottomOf(drawn: unknown, key: string): unknown {
+  let bottom: unknown
+  JSON.stringify(drawn, (_k, v) => {
+    if (v && typeof v === 'object' && v.props?.key === key) bottom = v.props.bottom
+    return v
+  })
+  return bottom
+}
+
+test('above another plugin’s band, the last click region keeps to its own picture', { options: { bandUsage: true } }, async ($, on) => {
+  engine(on)
+  beneathBand(on, () => ({ type: 'Text', props: {}, children: ['savvy band'] }))
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const band = await mountBand($, 'desktop', { bodyColumns: 120 })
+  const drawn = await band.drawn()
+  expect(JSON.stringify(drawn)).toContain('savvy band')
+  // The crew line reaches into the usage row beneath it; the usage row stops at its edge.
+  expect(bottomOf(drawn, 'band-0-hitbox')).toBe(-1)
+  expect(bottomOf(drawn, 'band-1-hitbox')).toBe(0)
+})
+
 test("a worker's reported steps fill its bar for real, with the step under way", async ($, on) => {
   engine(on)
   await start($)

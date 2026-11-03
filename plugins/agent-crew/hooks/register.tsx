@@ -1729,10 +1729,21 @@ const USAGE_SUB_W = 70
 
 // The meters side by side while each one's heading fits its share of the
 // width, else in as many columns as do, row under row.
-const usageSvg = (W: number, meters: Meter[], at: number): { source: string; height: number } => {
+const usageColumns = (W: number, meters: Meter[]): number => {
   const need = Math.max(0, ...meters.map(m => RING_ROOM + Math.max(textWidth(`${m.percent}% ${m.label}`, 12.5), USAGE_SUB_W) + 6))
   let cols = Math.max(1, meters.length)
   while (cols > 1 && W / cols < need) cols--
+  return cols
+}
+
+/** The meters in rows of `usageColumns`, each row a picture of its own where a row must take presses. */
+const usageRows = (W: number, meters: Meter[]): Meter[][] => {
+  const cols = usageColumns(W, meters)
+  return Array.from({ length: Math.ceil(meters.length / cols) }, (_, i) => meters.slice(i * cols, (i + 1) * cols))
+}
+
+// `cols`: the columns of the rows around it, so a row of its own lines up with them.
+const usageSvg = (W: number, meters: Meter[], at: number, cols = usageColumns(W, meters)): { source: string; height: number } => {
   const itemW = W / cols
   const height = USAGE_H * Math.max(1, Math.ceil(meters.length / cols))
   const c = 2 * Math.PI * RING_R
@@ -2327,10 +2338,19 @@ export const register: Register = (on, options) => {
         const hasCrew =
           (opts.bandAgents !== false && crewCounts(list, fileList).length > 0) || (opts.bandProgress === true && list.some(r => r.status === 'running'))
         const meters = opts.bandUsage === true ? metersOf(u).filter(m => opts[meterOption(m.key)] !== false) : []
-        const bandUsage = usageSvg(W - COMPACT_W, meters, at)
+        // A click region counts rows of the code font, not the picture's pixels: it
+        // never grows with a taller picture, so each row of meters is a picture with
+        // a region of its own (narrow-pictures-wrap).
+        const usageW = W - COMPACT_W
+        const usageCols = usageColumns(usageW, meters)
         const s = tr()
-        const hit = (key: string) => (
-          <Box key={`${key}-hitbox`} position="absolute" top={0} left={0} right={0} bottom={0}>
+        const rowCount = meters.length ? usageRows(usageW, meters).length : 0
+        // Each region reaches a row below its picture, since its rows fall short of
+        // the picture's pixels. Over the next picture that is harmless, as every
+        // region opens the pane; the last one stops at its own edge where another
+        // plugin's band follows, so it takes none of that band's presses.
+        const hit = (key: string, isLast: boolean) => (
+          <Box key={`${key}-hitbox`} position="absolute" top={0} left={0} right={0} bottom={isLast && !isEngineOwn(below) ? 0 : -1}>
             <Client key={ck(key)} module="./hotspot.tsx" width="100%" height="100%" props={{ id: 'band', hoverBg: '#3a3a3826' } satisfies HotspotProps} />
           </Box>
         )
@@ -2339,14 +2359,21 @@ export const register: Register = (on, options) => {
             {hasCrew ? (
               <Box key="band-crew">
                 <BandSvg source={bandCrewSvg(W, list, fileList, at)} alt={s.bandOpen} width={W} height={BAND_CREW_H} />
-                {hit('band-0')}
+                {hit('band-0', rowCount === 0)}
               </Box>
             ) : null}
             {meters.length ? (
               <Box key="band-usage-row" flexDirection="row" alignItems="center">
-                <Box key="band-usage">
-                  <BandSvg source={bandUsage.source} alt={meters.map(m => `${m.percent}% ${m.label}`).join(', ')} width={W - COMPACT_W} height={bandUsage.height} />
-                  {hit('band-1')}
+                <Box key="band-usage" flexDirection="column">
+                  {usageRows(usageW, meters).map((row, i) => {
+                    const picture = usageSvg(usageW, row, at, usageCols)
+                    return (
+                      <Box key={`band-usage-${i}`}>
+                        <BandSvg source={picture.source} alt={row.map(m => `${m.percent}% ${m.label}`).join(', ')} width={usageW} height={picture.height} />
+                        {hit(`band-${i + 1}`, i === rowCount - 1)}
+                      </Box>
+                    )
+                  })}
                 </Box>
                 {compactChip}
               </Box>
