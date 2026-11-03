@@ -296,6 +296,38 @@ test('the desktop tabs are buttons like Compact, the chosen one primary', async 
   expect(await drawnPart(ui, 'tabbox-active')).toContain('"variant":"primary"')
 })
 
+test('the desktop tabs keep a row of room above the first agent', async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const ui = await mount($, 'desktop')
+  expect(await drawnPart(ui, 'tab-head')).toContain('"marginBottom":1')
+})
+
+test('in a wide pane a desktop agent row is laid out at the pane’s width, so fitting it never blows it up', async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Erster', 'Explore')
+  const ui = await $.ui.mount({ plugin: 'agent-crew', surface: 'desktop', component: 'Pane', requestId: 'agent-crew', props: { ...(PANE_PROPS as object), bodyColumns: 200 } } as never)
+  const [row = ''] = await picturesIn(ui, 'row-a1')
+  // (200 − 4) × 8 − 8: past the 900 the pictures with a width keep.
+  expect(/<svg[^>]* width="(\d+)"/.exec(row)?.[1]).toBe('1560')
+})
+
+test('an open card stands a row apart from its neighbours, shut rows stay packed', async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Erster', 'Explore')
+  await spawn($, 'Zweiter', 'Explore')
+  await spawn($, 'Dritter', 'Explore')
+  const ui = await mount($, 'desktop')
+  const top = async (id: string) => ((await drawnPart(ui, `row-${id}`)).match(/"marginTop":(\d)/) ?? [])[1]
+  const tops = async () => Promise.all(['a1', 'a2', 'a3'].map(top))
+  expect(await tops()).toEqual(['0', '0', '0'])
+  await openRun(ui, 'desktop', 'a2')
+  expect(await tops()).toEqual(['0', '1', '1'])
+})
+
 // The pictures inside the drawn element with this key, as the desktop is handed them.
 async function pictureElements(ui: Mounted, key: string): Promise<{ source: string; width?: number }[]> {
   let part: unknown

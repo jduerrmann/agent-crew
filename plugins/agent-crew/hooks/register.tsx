@@ -1550,7 +1550,6 @@ const card = (color: string, depth: number) =>
     borderColor: color,
     paddingX: 1,
     marginLeft: depth * 2,
-    marginY: 0,
   }) as const
 
 /** An expanded agent's card, in the agent's colour. */
@@ -3557,9 +3556,14 @@ export const register: Register = (on, options) => {
         // the picture, its mark and the Details button stand side by side. An
         // expanded agent and its details share a card framed in the agent's colour,
         // indented by its depth; the picture inside it draws no indent of its own.
-        const runW = W - (Client ? 0 : 36)
-        const row = ({ run, depth }: { run: CrewRun; depth: number }) => {
+        // Fitted, it grows as well as shrinks: so it is laid out at the pane's own
+        // estimate, past the cap the other pictures keep, or a wide pane blows it up.
+        const runW = Client ? Math.max(220, Math.min(2400, ((e.props.bodyColumns || 40) - FRAME_COLS) * 8 - 8)) : W - 36
+        const row = ({ run, depth }: { run: CrewRun; depth: number }, i: number) => {
           const isOpen = p.expanded.includes(run.id)
+          // An open card stands a row apart from its neighbours; shut rows stay packed.
+          const prev = i > 0 ? shown[i - 1] : undefined
+          const marginTop = prev && (isOpen || p.expanded.includes(prev.run.id)) ? 1 : 0
           const w = isOpen ? runW - FRAME_COLS * 8 - depth * 16 : runW
           const d = isOpen ? 0 : depth
           const isPulse = run.status === 'running'
@@ -3605,12 +3609,12 @@ export const register: Register = (on, options) => {
             </Box>
           )
           return isOpen ? (
-            <Box key={`row-${run.id}`} {...cardOf(run, depth)}>
+            <Box key={`row-${run.id}`} {...cardOf(run, depth)} marginTop={marginTop}>
               {line}
               {details(run)}
             </Box>
           ) : (
-            <Box key={`row-${run.id}`} flexDirection="column">
+            <Box key={`row-${run.id}`} flexDirection="column" marginTop={marginTop}>
               {line}
             </Box>
           )
@@ -3658,7 +3662,7 @@ export const register: Register = (on, options) => {
                 agentsCompact
               ) : (
                 <Box key="sec-agents" {...FRAME}>
-                  <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+                  <Box key="tab-head" flexDirection="row" justifyContent="space-between" alignItems="center" marginBottom={1}>
                     {tabStrip}
                     {toggleCompact}
                   </Box>
