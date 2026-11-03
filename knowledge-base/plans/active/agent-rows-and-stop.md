@@ -30,7 +30,7 @@ updated: 2026-10-11
    - Fallback where TaskStop answers with an error: from the press on, the `tool.call` hook denies every call of that agent with a clear reason ("stopped from agent-crew"). The agent then ends on its own; mark the run `stopped`.
 2. **Clickable rows:** done on the desktop. A `hotspot.tsx` click region lies over each row's picture ([redraw-drops-button-clicks](../../limits/redraw-drops-button-clicks.md)). Left: the terminal rows still open by their ▸ Button only.
 3. **Details:** ■ Stop sits at the top (done). Left: move *Highlight its files* and *Copy answer* into that row; then task, actions, files, answer as today.
-   - In the app, check: does TaskStop from the mod open a permission dialog; does it end a foreground subagent; does a held agent loop on denied calls or end. Record the answers in [stopping-subagents](../../limits/stopping-subagents.md).
+   - Checked in the app: TaskStop from the mod stops a background subagent with no dialog ([stopping-subagents](../../limits/stopping-subagents.md)). Still to check: a foreground subagent, and whether a held agent loops on denied calls or ends.
 4. ■ also in the compact view? Only if it stays readable.
 
 **Options and text:** no option for stopping itself; texts de/en for the button, the confirm and the deny reason.

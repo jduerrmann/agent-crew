@@ -122,6 +122,6 @@ Read a plan, the notes it links and the code it points to before starting; check
 
 Never checked; check them before building on them, then turn the answer into a limit or a decision.
 
-- Does a mod's `$.tool.call` of `TaskStop` pass the permission check, and does it stop a foreground subagent? A background one stops by its agent id ([stopping-subagents](limits/stopping-subagents.md)). Can a mod message a waiting one?
+- Does ■ (`TaskStop`) stop a foreground subagent? A background one stops by its agent id, with no dialog ([stopping-subagents](limits/stopping-subagents.md)). Can a mod message a waiting one?
 - Does the update button work end to end against a real `claude`? The tests mock the command.
 - Do mods load in WSL sessions of the desktop app? filetree's README says no.
