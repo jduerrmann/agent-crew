@@ -296,24 +296,47 @@ test('the desktop tabs are buttons like Compact, the chosen one primary', async 
   expect(await drawnPart(ui, 'tabbox-active')).toContain('"variant":"primary"')
 })
 
-test('a desktop agent row leaves only the ▸ its click region draws at the right', async ($, on) => {
+// The pictures inside the drawn element with this key, as the desktop is handed them.
+async function pictureElements(ui: Mounted, key: string): Promise<{ source: string; width?: number }[]> {
+  let part: unknown
+  JSON.stringify(await ui.drawn(), (_k, v) => {
+    if (v && typeof v === 'object' && v.props?.key === key) part = v
+    return v
+  })
+  const out: { source: string; width?: number }[] = []
+  JSON.stringify(part ?? null, (_k, v) => {
+    if (v && typeof v === 'object' && v.type === 'Svg') out.push({ source: String(v.props?.source), width: v.props?.width })
+    return v
+  })
+  return out
+}
+
+test('a desktop agent row is one picture the desktop fits to the room, its mark inside it', async ($, on) => {
   engine(on)
   await start($)
   await spawn($, 'Tests reparieren', 'Explore')
   await spawn($, 'Plan', 'Plan')
+  await spawn($, 'Läuft noch', 'Explore')
   await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Fertig.', turnId: 't1' } as never)
   await $.turn.complete({ agentId: 'a2', reason: 'aborted', answer: '', turnId: 't2' } as never)
   const ui = await mount($, 'desktop')
+  // Running: the picture alone, its dot pulsing over it two cells off the right edge.
+  const running = await pictureElements(ui, 'row-a3')
+  expect(running.length).toBe(1)
+  expect(await drawnPart(ui, 'mark-a3')).toContain('"right":2')
   await showTab(ui, 'desktop', 'done')
-  // 60 columns make a 440 px picture width: the row's picture takes all of it
-  // but the status mark (22) and two cells for the ▸ (16).
-  const width = async (id: string) => /<svg[^>]* width="(\d+)"/.exec((await picturesIn(ui, `row-${id}`))[0] ?? '')?.[1]
-  expect(await width('a1')).toBe('402')
-  expect(JSON.stringify(await ui.drawn())).not.toContain('hitroom-')
-  // A stopped one has no mark: its meta says so, and the picture takes the room.
+  // No width handed over, so the desktop fits it to the room: the estimate of the
+  // pane's width (440 px at 60 columns) may run past the edge.
+  const [done] = await pictureElements(ui, 'row-a1')
+  expect(done?.width).toBeUndefined()
+  expect(/<svg[^>]* width="(\d+)"/.exec(done?.source ?? '')?.[1]).toBe('440')
+  // Its ✓ inside it, left of the two cells for the ▸ (440 − 16 − 8).
+  expect(done?.source).toContain('M411 16l3.5 3.5')
+  expect(await drawnPart(ui, 'mark-a1')).toBe('null')
+  // A stopped one's ■ in the same place.
+  const [stopped] = await pictureElements(ui, 'row-a2')
+  expect(stopped?.source).toContain('<rect x="412" y="12" width="8" height="8" rx="1.5" fill="#9a9a96"/>')
   expect(await drawnPart(ui, 'mark-a2')).toBe('null')
-  expect(await width('a2')).toBe('424')
-  expect(await drawnPart(ui, 'row-a2')).toContain('gestoppt')
 })
 
 test("a subagent's turn.start leaves the main chat's turn open in the timeline", async ($, on) => {

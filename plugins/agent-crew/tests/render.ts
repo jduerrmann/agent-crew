@@ -159,8 +159,11 @@ function measure(n: El, maxW: number): Size {
       const w = widthOf(buttonLabel(n))
       return q.plain ? { w, h: LH } : { w: w + 20, h: 26 }
     }
-    case 'Svg':
-      return { w: num(q.width) ?? 0, h: num(q.height) ?? 0 }
+    case 'Svg': {
+      // Without a size the picture takes its markup's own, up to the slot.
+      const own = (attr: string) => Number(new RegExp(`^<svg[^>]* ${attr}="([\\d.]+)"`).exec(String(q.source ?? ''))?.[1] ?? 0)
+      return { w: num(q.width) ?? Math.min(own('width'), maxW), h: num(q.height) ?? own('height') }
+    }
     case 'Markdown':
       return { w: maxW, h: 26 }
     case 'Code':
@@ -384,7 +387,15 @@ function drawBox(n: El, x: number, y: number, w: number, h: number): string {
     const isStretched = q.flexDirection === 'column' && it.n.type !== 'Text' && !(it.n.type === 'Button' && !p(it.n).plain) && num(p(it.n).width) === undefined
     out += draw(it.n, x + pd.l + it.x, y + pd.t + it.y, isStretched ? innerW - it.x - margin(it.n).r : it.w, it.h)
   }
-  for (const k of kids(n).filter(isAbsolute)) out += draw(k, x + pd.l, y + pd.t, innerW, innerH)
+  for (const k of kids(n).filter(isAbsolute)) {
+    // Held off the right edge by `right` cells, its own width: a row's running dot.
+    const kq = p(k)
+    const right = num(kq.right)
+    if (right !== undefined && right > 0 && num(kq.left) === undefined) {
+      const size = measure(k, innerW)
+      out += draw(k, x + pd.l + innerW - right * CW - size.w, y + pd.t + (num(kq.top) ?? 0) * LH, size.w, size.h)
+    } else out += draw(k, x + pd.l, y + pd.t, innerW, innerH)
+  }
   return out
 }
 

@@ -21,7 +21,7 @@ Rules:
 ### Rendering and input
 - [desktop-text-is-proportional](limits/desktop-text-is-proportional.md): desktop text isn't monospace, so box-drawing tabs and `─` rules break; use Boxes and SVG there
 - [builtin-components-fixed](limits/builtin-components-fixed.md): SVG takes no clicks, Input always has a submit button, no font size, Box borders all round, pane scrolls whole
-- [no-pixel-width](limits/no-pixel-width.md): only `bodyColumns` is known, no pixels; ~8 px per column, text widths estimated
+- [no-pixel-width](limits/no-pixel-width.md): only `bodyColumns` is known, no pixels; ~8 px per column, text widths estimated; agent rows fit their slot
 - [surface-features-vary](limits/surface-features-vary.md): Svg, Client, Markdown and Input can be missing (VS Code, mobile); feature-test, always a fallback
 - [client-no-blur-event](limits/client-no-blur-event.md): a Client never hears it lost the keys; the hooks module guesses focus from other input
 - [client-posts-per-frame](limits/client-posts-per-frame.md): Client posts arrive once per frame and props trail typing; props must be plain data

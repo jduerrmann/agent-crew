@@ -1333,19 +1333,25 @@ const costSvg = (W: number, main: CostPart, subs: CostPart, agents: number): { s
 const ROW_H = 76
 const INDENT = 16
 
-// The status mark sits beside the row's picture, not in it: a running agent's
-// dot pulses, and only a Client keeps a pulse through the pane's redraws.
+// The room a row's status mark takes. A running agent's dot pulses, and only a
+// Client keeps a pulse through the pane's redraws, so it lies over the picture;
+// any other mark is drawn in it, at its right (`rightRoom`, `hasMark`).
 const MARK_W = 22
+/** Two cells at a row's right edge where its click region draws the ▸. */
+const CHEVRON_W = 16
 
 const runMarkSvg = (r: CrewRun): string => svg(MARK_W, ROW_H, statusMark(MARK_W - 8, 16, r.status, colorOf(r)), false)
 
-const runSvg = (W: number, r: CrewRun, depth: number, byId: Map<string, CrewRun>, at: number, isViewed: boolean): string => {
+// `rightRoom`: px at the right the text and bar keep clear of, for the mark and
+// the ▸; `hasMark`: the still mark drawn there, left of the ▸.
+const runSvg = (W: number, r: CrewRun, depth: number, byId: Map<string, CrewRun>, at: number, isViewed: boolean, rightRoom = 0, hasMark = false): string => {
   const color = colorOf(r)
   const ctx = ctxOf(r)
   const x0 = depth * INDENT
   const tx = x0 + 42
   // Deep nesting in a narrow pane leaves no room: never a negative width.
-  const textW = Math.max(0, W - tx)
+  const textW = Math.max(0, W - tx - rightRoom)
+  const mark = hasMark ? statusMark(W - CHEVRON_W - 8, 16, r.status, color) : ''
   const stats = `ctx ${ctx}% · ${fmtTokens(r.contextTokens)}  ≈${fmtCost(r.costUsd)}  ${fmtTime(elapsed(r, at))}`
   const b = barOf(r, at)
   // The row is drawn anew several times a second while it runs, each time
@@ -1375,7 +1381,7 @@ ${crab(x0 + (isViewed ? 4 : 0), 14, costumeOf(r), color, r.status === 'stopped',
 <text class="m" x="${tx}" y="50" font-family="${FONT}" font-size="11">${xml(fitText(last, 11, textW))}</text>
 <text class="s" x="${tx + textW}" y="64" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
 ${reportText}
-<rect class="k" x="${tx}" y="68" width="${textW}" height="4" rx="2"/>${barBody}`,
+<rect class="k" x="${tx}" y="68" width="${textW}" height="4" rx="2"/>${barBody}${mark}`,
   )
 }
 
@@ -3555,25 +3561,28 @@ export const register: Register = (on, options) => {
         const { Svg } = ui
         desktopDrawnAt = at
         const W = desktopW
-        // The row's picture leaves room at its right for the ▸: two cells the
-        // click region draws it in, or the Details button where there is none. An
+        // With a Client, a row is its picture alone, drawn without a width so the
+        // desktop fits it to the room there is: the pane's width is only estimated
+        // (no-pixel-width), and anything beside a picture drawn too wide is pushed
+        // out past the edge. The picture keeps its right end clear for the mark and
+        // the ▸ the click region draws; a running dot lies over it. Without a Client,
+        // the picture, its mark and the Details button stand side by side. An
         // expanded agent and its details share a card framed in the agent's colour,
         // indented by its depth; the picture inside it draws no indent of its own.
-        const runW = W - (Client ? 16 : 36)
+        const runW = W - (Client ? 0 : 36)
         const row = ({ run, depth }: { run: CrewRun; depth: number }) => {
           const isOpen = p.expanded.includes(run.id)
           const w = isOpen ? runW - FRAME_COLS * 8 - depth * 16 : runW
           const d = isOpen ? 0 : depth
-          // The status mark beside the picture: a running agent's dot pulses in a
-          // Client, any other mark is a still picture. A stopped one has none: its
-          // meta says so and its bar is grey, and the picture takes the room.
-          const markW = run.status === 'stopped' ? 0 : MARK_W
+          const isPulse = run.status === 'running'
+          const isViewedRun = run.agentId !== undefined && run.agentId === viewed
+          const alt = `${run.description || typeLabel(run)}: ${typeLabel(run)}, ${modelName(run.model)}, ${isActive(run) ? s.isRunning : s.isFinished}`
           const mark =
-            !markW ? null : run.status === 'running' && Client ? (
-              <Box key={`mark-${run.id}`} flexShrink={0} width={3} justifyContent="center">
+            isPulse && Client ? (
+              <Box key={`mark-${run.id}`} position="absolute" top={0} right={CHEVRON_W / 8} width={3} justifyContent="center">
                 <Client key={ck(`pulse-${run.id}`)} module="./hotspot.tsx" props={{ line: [{ t: '●', c: colorOf(run), pulse: true }] } satisfies HotspotProps} />
               </Box>
-            ) : (
+            ) : Client ? null : (
               <Box key={`mark-${run.id}`} flexShrink={0}>
                 <Svg source={runMarkSvg(run)} alt={STATUS_GLYPH[run.status]} width={MARK_W} height={ROW_H} />
               </Box>
@@ -3592,18 +3601,19 @@ export const register: Register = (on, options) => {
               />
             </Box>
           ) : null
-          const line = (
+          const line = hit ? (
+            <Box flexDirection="column">
+              <Svg source={runSvg(w, run, d, byAgent, at, isViewedRun, CHEVRON_W + MARK_W, !isPulse)} alt={alt} />
+              {mark}
+              {hit}
+            </Box>
+          ) : (
             <Box flexDirection="row" alignItems="flex-start" justifyContent="space-between">
               <Box flexDirection="row" alignItems="flex-start">
-                <Svg
-                  source={runSvg(w - markW, run, d, byAgent, at, run.agentId !== undefined && run.agentId === viewed)}
-                  alt={`${run.description || typeLabel(run)}: ${typeLabel(run)}, ${modelName(run.model)}, ${isActive(run) ? s.isRunning : s.isFinished}`}
-                  width={w - markW}
-                  height={ROW_H}
-                />
+                <Svg source={runSvg(w - MARK_W, run, d, byAgent, at, isViewedRun)} alt={alt} width={w - MARK_W} height={ROW_H} />
                 {mark}
               </Box>
-              {hit ?? detailsButton(run)}
+              {detailsButton(run)}
             </Box>
           )
           return isOpen ? (
