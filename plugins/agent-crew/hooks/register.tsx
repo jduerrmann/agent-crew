@@ -2599,10 +2599,11 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // A turn of the main chat begins: its bar in the timeline. Only the main loop
-  // raises turn.start; a subagent's run begins with its spawn.
+  // A turn of the main chat begins: its bar in the timeline. A subagent's or
+  // teammate's turn starts here too, with its `agentId`; its bar is its run's.
   on('turn.start', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId !== undefined) return result
     const at = await $.clock.now()
     // One left open (an end the mod did not hear) ends where the next begins.
     await update($, mainTurns, list => [...list.map(t => (t.endedAt === undefined ? { ...t, endedAt: at } : t)), { startedAt: at }].slice(-MAX_MAIN_TURNS))

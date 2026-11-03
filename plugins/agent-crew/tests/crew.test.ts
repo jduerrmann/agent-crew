@@ -179,7 +179,7 @@ test('showUsage off hides the usage section', { options: { showUsage: false } },
   expect(await ui.find({ text: /Kontext/ })).toBeUndefined()
 })
 
-// A turn of the main chat, `ms` long: the main loop alone raises turn.start.
+// A turn of the main chat, `ms` long: a turn.start without an `agentId`.
 async function mainTurn($: Engine, clock: { advance: (ms: number) => Promise<unknown> }, id: string, ms: number, reason = 'answer') {
   await $.turn.start({ text: 'Mach weiter', turnId: id } as never)
   await clock.advance(ms)
@@ -197,6 +197,20 @@ const timelineOf = async ($: Engine, surface: Surface) => {
   await ui.unmount()
   return out
 }
+
+test("a subagent's turn.start leaves the main chat's turn open in the timeline", async ($, on) => {
+  const { clock } = engine(on)
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  await start($)
+  await $.turn.start({ text: 'Los', turnId: 't1' } as never)
+  await spawn($, 'Tests schreiben', 'general-purpose')
+  await clock.advance(10_000)
+  await $.turn.start({ text: 'Lies die README.', turnId: 's1', agentId: 'a1' } as never)
+  await clock.advance(10_000)
+  // One bar of the main chat, still running: the subagent's turn neither ends it nor adds one.
+  const tl = await timelineOf($, 'desktop')
+  expect((tl.match(/y=\\"4\\" width=\\"[\d.]+\\" height=\\"7\\" rx=\\"3.5\\" fill=\\"#D97757\\"/g) ?? []).length).toBe(1)
+})
 
 test("the timeline shows the main chat's turns in a row of their own, above the subagents", async ($, on) => {
   const { clock } = engine(on)

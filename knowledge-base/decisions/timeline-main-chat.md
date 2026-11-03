@@ -14,7 +14,7 @@ updated: 2026-10-11
 
 **Decision:**
 - Each turn of the main chat is a bar in one row at the top, in Claude's colour (`CLAY`), red when the turn failed or was refused, faint when interrupted.
-- A turn runs from `turn.start` to the `turn.complete` without an `agentId`. Only the main loop raises `turn.start`; a subagent's run begins with its spawn. A turn whose end was never heard ends where the next one begins.
+- A turn runs from the `turn.start` to the `turn.complete` without an `agentId`. A subagent's or teammate's turn raises `turn.start` too, with its `agentId`; the timeline leaves those to the run's own bar. A turn whose end was never heard ends where the next one begins.
 - The turns are kept in `mainTurns`, the newest 200 ([store-json-4mib](../limits/store-json-4mib.md)). They join the axis, so a pause folds only when neither the main chat nor an agent worked.
 - The timeline shows as soon as the main chat has a turn, without any subagent.
 - While a turn runs, the pane redraws every five seconds so its bar grows.
