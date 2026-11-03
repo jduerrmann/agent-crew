@@ -1493,6 +1493,74 @@ test('the desktop band fits its counts to its width: words, then signs and numbe
   expect(narrow.end).toBeLessThanOrEqual(narrow.width)
 })
 
+// The pictures inside the drawn element with this key: their sources.
+async function picturesIn(ui: { drawn: () => Promise<unknown> }, key: string): Promise<string[]> {
+  let part: unknown
+  JSON.stringify(await ui.drawn(), (_k, v) => {
+    if (v && typeof v === 'object' && v.props?.key === key) part = v
+    return v
+  })
+  const sources: string[] = []
+  JSON.stringify(part ?? null, (_k, v) => {
+    if (v && typeof v === 'object' && v.type === 'Svg') sources.push(String(v.props?.source))
+    return v
+  })
+  return sources
+}
+
+// Each text of a picture as the picture measures it: where it starts and ends on its line.
+function textBoxes(source: string): { y: number; from: number; to: number; text: string }[] {
+  return [...source.matchAll(/<text ([^>]*)>(.*?)<\/text>/g)].map(m => {
+    const attr = (name: string) => new RegExp(`(?:^| )${name}="([^"]*)"`).exec(m[1] ?? '')?.[1]
+    const text = (m[2] ?? '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    const w = textWidth(text, Number(attr('font-size')))
+    const x = Number(attr('x'))
+    const from = attr('text-anchor') === 'end' ? x - w : attr('text-anchor') === 'middle' ? x - w / 2 : x
+    return { y: Number(attr('y')), from, to: from + w, text }
+  })
+}
+
+// No text runs past the picture's edges, and none overlaps another on its line.
+function expectLaidOut(source: string): void {
+  const width = Number(/<svg[^>]* width="([\d.]+)"/.exec(source)?.[1])
+  const boxes = textBoxes(source)
+  for (const b of boxes) {
+    expect(b.from).toBeGreaterThanOrEqual(-0.5)
+    expect(b.to).toBeLessThanOrEqual(width + 0.5)
+  }
+  for (const a of boxes)
+    for (const b of boxes) if (a !== b && a.y === b.y && a.from < b.from) expect(a.to).toBeLessThanOrEqual(b.from)
+}
+
+test('a narrow desktop pane wraps the usage meters and puts the cost rows’ tokens on lines of their own', { options: { showTotals: true } }, async ($, on) => {
+  const { clock } = engine(on)
+  await start($)
+  const resetsAt = new Date((await clock.now()) + 3 * 24 * 3_600_000).toISOString()
+  await $.session.measure({ context: { percent: 7, tokens: 70_000, window: 1_000_000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 3, resetsAt }, { kind: 'seven_day', percentUsed: 41, resetsAt }], changed: ['context', 'rateLimits'] } as never)
+  const picture = async (columns: number, key: string) => {
+    const ui = await $.ui.mount({ plugin: 'agent-crew', surface: 'desktop', component: 'Pane', requestId: 'agent-crew', props: { ...(PANE_PROPS as object), bodyColumns: columns } as never })
+    const [source = ''] = await picturesIn(ui, key)
+    await ui.unmount()
+    return { source, height: Number(/<svg[^>]* height="([\d.]+)"/.exec(source)?.[1]) }
+  }
+  // Wide: the meters side by side, each cost row on one line.
+  const wideUsage = await picture(103, 'sec-usage')
+  const wideCost = await picture(103, 'sec-totals')
+  expect(wideUsage.height).toBe(44)
+  expect(wideCost.height).toBe(92)
+  expectLaidOut(wideUsage.source)
+  expectLaidOut(wideCost.source)
+  // Narrow: the meters in rows, the tokens beneath their rows, nothing on top of anything.
+  const narrowUsage = await picture(24, 'sec-usage')
+  const narrowCost = await picture(24, 'sec-totals')
+  expect(narrowUsage.height).toBeGreaterThan(44)
+  expect(narrowCost.height).toBeGreaterThan(92)
+  expect(narrowUsage.source).toContain('Woche')
+  expect(narrowCost.source).toContain('aus Cache')
+  expectLaidOut(narrowUsage.source)
+  expectLaidOut(narrowCost.source)
+})
+
 test("a worker's reported steps fill its bar for real, with the step under way", async ($, on) => {
   engine(on)
   await start($)

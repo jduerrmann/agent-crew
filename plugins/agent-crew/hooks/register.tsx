@@ -1267,33 +1267,49 @@ const statusMark = (x: number, y: number, status: CrewStatus, color: string): st
 }
 
 // The cost section: the main chat and the subagents on rows of their own, a bar
-// splitting the total between them, and the total underneath.
+// splitting the total between them, and the total underneath. Where a row's
+// tokens do not fit between its name and its cost, every row takes them onto a
+// line of their own beneath it.
 const COST_H = 92
+const COST_H_NARROW = 130
 const SUB_COLOR = '#378ADD'
 
 type CostPart = { cost: number; tokens: number; cache: number }
 
-const costSvg = (W: number, main: CostPart, subs: CostPart, agents: number): string => {
+const costSvg = (W: number, main: CostPart, subs: CostPart, agents: number): { source: string; height: number } => {
   const s = tr()
-  const tokenText = (fresh: number, cache: number) => xml(`${fmtTokens(fresh)} ${s.fresh} · ${fmtTokens(cache)} ${s.cached}`)
+  const tokenText = (fresh: number, cache: number) => `${fmtTokens(fresh)} ${s.fresh} · ${fmtTokens(cache)} ${s.cached}`
   const total = main.cost + subs.cost
   const costX = W - 96
+  const parts: [string, CostPart][] = [
+    [s.main, main],
+    [s.subagents(agents), subs],
+    [s.total, { cost: total, tokens: main.tokens + subs.tokens, cache: main.cache + subs.cache }],
+  ]
+  const isNarrow = parts.some(([label, p]) => 16 + textWidth(label, 12.5) + 12 + textWidth(tokenText(p.tokens, p.cache), 12) > costX)
+  const tokens = (y: number, p: CostPart, x: number) =>
+    isNarrow
+      ? `<text class="s" x="${x}" y="${y + 16}" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${xml(fitText(tokenText(p.tokens, p.cache), 12, W - x))}</text>`
+      : `<text class="s" x="${costX}" y="${y}" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${xml(tokenText(p.tokens, p.cache))}</text>`
+  // Beside the cost, at the right: its width as drawn, and a gap.
+  const nameW = (cost: number, size: number) => Math.max(0, W - 16 - textWidth(`≈${fmtCost(cost)}`, size) - 12)
   const row = (y: number, color: string, label: string, p: CostPart) =>
     `<circle cx="5" cy="${y - 4}" r="4" fill="${color}"/>` +
-    `<text class="t" x="16" y="${y}" font-family="${FONT}" font-size="12.5">${xml(label)}</text>` +
-    `<text class="s" x="${costX}" y="${y}" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${tokenText(p.tokens, p.cache)}</text>` +
+    `<text class="t" x="16" y="${y}" font-family="${FONT}" font-size="12.5">${xml(isNarrow ? fitText(label, 12.5, nameW(p.cost, 12.5)) : label)}</text>` +
+    tokens(y, p, 16) +
     `<text class="t" x="${W}" y="${y}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-weight="600" font-variant-numeric="tabular-nums">≈${fmtCost(p.cost)}</text>`
+  const [rowY, row2Y, barY, sumY, height] = isNarrow ? [14, 52, 84, 108, COST_H_NARROW] : [14, 36, 50, 80, COST_H]
   const mainW = total > 0 ? Math.max(main.cost > 0 ? 3 : 0, Math.round((W * main.cost) / total)) : 0
   const bar =
-    `<rect class="k" x="0" y="50" width="${W}" height="6" rx="3"/>` +
+    `<rect class="k" x="0" y="${barY}" width="${W}" height="6" rx="3"/>` +
     (total > 0
-      ? `<rect x="0" y="50" width="${mainW}" height="6" rx="3" fill="${CLAY}"/><rect x="${mainW}" y="50" width="${W - mainW}" height="6" rx="3" fill="${SUB_COLOR}"/>`
+      ? `<rect x="0" y="${barY}" width="${mainW}" height="6" rx="3" fill="${CLAY}"/><rect x="${mainW}" y="${barY}" width="${W - mainW}" height="6" rx="3" fill="${SUB_COLOR}"/>`
       : '')
   const sum =
-    `<text class="s" x="0" y="80" font-family="${FONT}" font-size="12">${xml(s.total)}</text>` +
-    `<text class="s" x="${costX}" y="80" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${tokenText(main.tokens + subs.tokens, main.cache + subs.cache)}</text>` +
-    `<text class="t" x="${W}" y="80" text-anchor="end" font-family="${FONT}" font-size="15" font-weight="700" font-variant-numeric="tabular-nums">≈${fmtCost(total)}</text>`
-  return svg(W, COST_H, row(14, CLAY, s.main, main) + row(36, SUB_COLOR, s.subagents(agents), subs) + bar + sum, false)
+    `<text class="s" x="0" y="${sumY}" font-family="${FONT}" font-size="12">${xml(s.total)}</text>` +
+    tokens(sumY, parts[2]?.[1] ?? main, 0) +
+    `<text class="t" x="${W}" y="${sumY}" text-anchor="end" font-family="${FONT}" font-size="15" font-weight="700" font-variant-numeric="tabular-nums">≈${fmtCost(total)}</text>`
+  return { source: svg(W, height, row(rowY, CLAY, s.main, main) + row(row2Y, SUB_COLOR, s.subagents(agents), subs) + bar + sum, false), height }
 }
 
 const ROW_H = 76
@@ -1706,25 +1722,39 @@ const isEngineOwn = (x: unknown): boolean => Boolean(x && typeof x === 'object' 
 
 const USAGE_H = 44
 const RING_R = 9
+/** From a meter's left edge to its text: the ring and the gaps beside it. */
+const RING_ROOM = 2 * RING_R + 11
+/** What a meter's second line keeps at least, as `70k / 1.0M`, before the meters wrap. */
+const USAGE_SUB_W = 70
 
-const usageSvg = (W: number, meters: Meter[], at: number): string => {
-  const itemW = W / Math.max(1, meters.length)
+// The meters side by side while each one's heading fits its share of the
+// width, else in as many columns as do, row under row.
+const usageSvg = (W: number, meters: Meter[], at: number): { source: string; height: number } => {
+  const need = Math.max(0, ...meters.map(m => RING_ROOM + Math.max(textWidth(`${m.percent}% ${m.label}`, 12.5), USAGE_SUB_W) + 6))
+  let cols = Math.max(1, meters.length)
+  while (cols > 1 && W / cols < need) cols--
+  const itemW = W / cols
+  const height = USAGE_H * Math.max(1, Math.ceil(meters.length / cols))
   const c = 2 * Math.PI * RING_R
   const items = meters
-    .map((m, i) => {
+    .map((m, n) => {
+      const i = n % cols
+      const dy = Math.floor(n / cols) * USAGE_H
       const x = i * itemW + RING_R + 3
       const filled = (c * m.percent) / 100
       const sub = [m.detail, m.resetsAt ? resetIn(m.resetsAt, at) : ''].filter(Boolean).join(' · ')
       const textW = itemW - RING_R * 2 - 16
+      const labelW = textW - textWidth(`${m.percent}% `, 12.5)
+      const cy = 16 + dy
       return (
-        `<circle cx="${x}" cy="16" r="${RING_R}" fill="none" stroke="#9a9a96" stroke-opacity=".3" stroke-width="3"/>` +
-        `<circle cx="${x}" cy="16" r="${RING_R}" fill="none" stroke="${meterColor(m.percent)}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${filled} ${c}" transform="rotate(-90 ${x} 16)"/>` +
-        `<text x="${x + RING_R + 8}" y="20" font-family="${FONT}" font-size="12.5"><tspan class="t" font-weight="600">${m.percent}%</tspan><tspan class="s"> ${xml(m.label)}</tspan></text>` +
-        (sub ? `<text class="m" x="${x + RING_R + 8}" y="36" font-family="${FONT}" font-size="10.5">${xml(fitText(sub, 10.5, textW))}</text>` : '')
+        `<circle cx="${x}" cy="${cy}" r="${RING_R}" fill="none" stroke="#9a9a96" stroke-opacity=".3" stroke-width="3"/>` +
+        `<circle cx="${x}" cy="${cy}" r="${RING_R}" fill="none" stroke="${meterColor(m.percent)}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${filled} ${c}" transform="rotate(-90 ${x} ${cy})"/>` +
+        `<text x="${x + RING_R + 8}" y="${20 + dy}" font-family="${FONT}" font-size="12.5"><tspan class="t" font-weight="600">${m.percent}%</tspan><tspan class="s"> ${xml(fitText(m.label, 12.5, labelW))}</tspan></text>` +
+        (sub ? `<text class="m" x="${x + RING_R + 8}" y="${36 + dy}" font-family="${FONT}" font-size="10.5">${xml(fitText(sub, 10.5, textW))}</text>` : '')
       )
     })
     .join('')
-  return svg(W, USAGE_H, items, false)
+  return { source: svg(W, height, items, false), height }
 }
 
 // --- the files section.
@@ -2297,6 +2327,7 @@ export const register: Register = (on, options) => {
         const hasCrew =
           (opts.bandAgents !== false && crewCounts(list, fileList).length > 0) || (opts.bandProgress === true && list.some(r => r.status === 'running'))
         const meters = opts.bandUsage === true ? metersOf(u).filter(m => opts[meterOption(m.key)] !== false) : []
+        const bandUsage = usageSvg(W - COMPACT_W, meters, at)
         const s = tr()
         const hit = (key: string) => (
           <Box key={`${key}-hitbox`} position="absolute" top={0} left={0} right={0} bottom={0}>
@@ -2314,7 +2345,7 @@ export const register: Register = (on, options) => {
             {meters.length ? (
               <Box key="band-usage-row" flexDirection="row" alignItems="center">
                 <Box key="band-usage">
-                  <BandSvg source={usageSvg(W - COMPACT_W, meters, at)} alt={meters.map(m => `${m.percent}% ${m.label}`).join(', ')} width={W - COMPACT_W} height={USAGE_H} />
+                  <BandSvg source={bandUsage.source} alt={meters.map(m => `${m.percent}% ${m.label}`).join(', ')} width={W - COMPACT_W} height={bandUsage.height} />
                   {hit('band-1')}
                 </Box>
                 {compactChip}
@@ -3457,6 +3488,8 @@ export const register: Register = (on, options) => {
           )
         }
         const timeline = showTimeline && p.isTimelineOpen ? timelineSvg(W, list, turns, mainRep, at) : null
+        const usagePicture = usageSvg(W, meters, at)
+        const costPicture = costSvg(W, main, subs, list.length)
 
         // Compact folds the agents' frame alone: a row of crabs each for active and finished.
         const compact = compactSvg(W, list.filter(isActive), list.filter(r => !isActive(r)), null, at)
@@ -3479,7 +3512,7 @@ export const register: Register = (on, options) => {
                   </Text>
                   {compactButton}
                 </Box>
-                <Svg source={usageSvg(W, meters, at)} alt={meters.map(m => `${m.percent}% ${m.label}`).join(', ')} width={W} height={USAGE_H} />
+                <Svg source={usagePicture.source} alt={meters.map(m => `${m.percent}% ${m.label}`).join(', ')} width={W} height={usagePicture.height} />
               </Box>
             )}
             {showTotals && (
@@ -3489,7 +3522,7 @@ export const register: Register = (on, options) => {
                     {s.totalsTitle}
                   </Text>
                 </Box>
-                <Svg source={costSvg(W, main, subs, list.length)} alt={`${s.main} ≈${fmtCost(main.cost)}, ${s.subagents(list.length)} ≈${fmtCost(subs.cost)}`} width={W} height={COST_H} />
+                <Svg source={costPicture.source} alt={`${s.main} ≈${fmtCost(main.cost)}, ${s.subagents(list.length)} ≈${fmtCost(subs.cost)}`} width={W} height={costPicture.height} />
               </Box>
             )}
             {isAgentsShown &&
