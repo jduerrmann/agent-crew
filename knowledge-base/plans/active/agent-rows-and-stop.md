@@ -23,11 +23,11 @@ updated: 2026-10-11
 - No stop exists. Open question in the index: can a mod stop a subagent?
 
 **Approach:**
-1. **Spike, stop:** find a way that works, in this order:
-   - `$.turn.abort({ turnId })` cancels only the running turn whose id `turn.start` handed this plugin. Check whether `turn.start` fires for subagent turns with an `agentId`, and whether aborting one stops the agent.
-   - `$.tool.call` can run built-in tools. `TaskStop` stops background tasks; check whether background and workflow agents have a task id the mod can learn (`agent.spawn` result, `$.agent.list()`).
-   - Fallback that always works: from the press on, the `tool.call` hook denies every call of that agent with a clear reason ("stopped from agent-crew"). The agent then ends on its own; mark the run `stopped`.
-   Record the answer as a limit or decision note.
+1. **Spike, stop:** first part done ([stopping-subagents](../../limits/stopping-subagents.md)).
+   - `turn.abort` reaches only the main loop: out.
+   - `TaskStop` with the agent id stopped a background subagent at once. Use it first: `$.tool.call({ tool: 'TaskStop', task_id: run.agentId })` in a dispatch of its own (`$.clock.after`, [onpress-work-dropped](../../limits/onpress-work-dropped.md)).
+   - Still to check, live in the mod: does the call pass the permission check without a dialog; does it stop a foreground subagent; workflow agents.
+   - Fallback where TaskStop answers with an error: from the press on, the `tool.call` hook denies every call of that agent with a clear reason ("stopped from agent-crew"). The agent then ends on its own; mark the run `stopped`.
 2. **Clickable rows:** done on the desktop. A `hotspot.tsx` click region lies over each row's picture ([redraw-drops-button-clicks](../../limits/redraw-drops-button-clicks.md)). Left: the terminal rows still open by their ▸ Button only.
 3. **Details:** a small action row at the top: ■ Stop (running only, with a confirm), *Highlight its files*, *Copy answer*; then task, actions, files, answer as today.
 4. ■ also in the compact view? Only if it stays readable.
