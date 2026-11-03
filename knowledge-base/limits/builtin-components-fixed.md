@@ -15,11 +15,11 @@ updated: 2026-10-11
 | --- | --- |
 | `Svg` | Takes no clicks. Swapping the SVG file rows for Buttons lost the colours and the animation. |
 | `Input` | Always draws its own submit button, at a fixed width. An empty `submitLabel` only shrinks the button, and props don't remove it. |
-| `Box` | A border always runs all the way round; one side can't be hidden. A seamless browser-tab look isn't possible with it. |
+| `Box` | A border always runs all the way round; one side can't be hidden. A seamless browser-tab look isn't possible with it. On the desktop a border takes a whole row above and below, so a bordered one-line Box stands three rows high ([tabs-as-buttons](../decisions/tabs-as-buttons.md)). |
 | Pane | Scrolls only as a whole. Two parts that scroll on their own aren't possible, and a box with a fixed height clips its content. |
 | `Text` | Has no font size. |
 | `Text wrap="truncate-end"` | Adds "…". On the desktop a one-row box with `overflow="hidden"` still showed a second line, because a desktop row is taller than a cell. |
-| `Button` | Draws its label in one colour, so coloured counts in a label are lost. |
+| `Button` | Draws its label in one colour, so coloured counts in a label are lost. On the desktop the colours of Text children are lost too (2026-11-03); only `variant` changes its colour. |
 | `Markdown` links | Only `https:`, `http:` and `file:` work. |
 
 **Workaround:** where the look matters, draw it yourself in a `Client` (`filerows.tsx`, `searchbox.tsx`, `tabs.tsx`):

@@ -2958,50 +2958,33 @@ export const register: Register = (on, options) => {
         { id: 'done', icon: '✓', label: s.finished, count: doneCount, color: COMMIT_COLOR },
       ]
       // The desktop sets text in a proportional face, so box-drawing art cannot
-      // line up there: its tabs are bordered Boxes the app draws itself. Inside,
-      // a Client takes the press, so a click lands while the crabs' flip book
-      // redraws the pane; and while an agent runs, the Active tab's dot pulses.
-      const isAnyRunning = list.some(r => r.status === 'running')
+      // line up there: its tabs are the app's own buttons, as Compact is, the
+      // chosen one primary, since the desktop draws a Button's Texts in its own
+      // colour (tabs-as-buttons); the terminal keeps theirs. A click
+      // region over each takes the press, so a click lands while the crabs' flip
+      // book redraws the pane; the Button's own press is there where it falls short.
       const boxTabs = (
-        <Box key="tab-row" flexDirection="row" alignItems="flex-end">
+        <Box key="tab-row" flexDirection="row" alignItems="center">
           {tabSpecs.map(t => {
             const isOn = p.tab === t.id
-            const line: HotspotProps['line'] = [
-              { t: t.icon, c: isOn ? t.color : undefined, dim: !isOn, pulse: t.id === 'active' && isAnyRunning },
-              { t: ' ' },
-              { t: t.label, b: isOn, dim: !isOn },
-              { t: ' ' },
-              { t: String(t.count), c: isOn ? t.color : undefined, dim: true },
-            ]
-            // The pulse needs a colour, also on the tab not chosen.
-            if (line[0] && line[0].pulse) line[0].c = t.color
             return (
-              <Box
-                key={`tabbox-${t.id}`}
-                flexDirection="row"
-                alignItems="center"
-                borderStyle="round"
-                borderColor={isOn ? t.color : '#6b6b68'}
-                borderDimColor={!isOn}
-                paddingX={1}
-                marginRight={1}
-                hover={{ borderColor: isOn ? t.color : '#9a9a96' }}
-              >
+              <Box key={`tabbox-${t.id}`} flexDirection="row" alignItems="center" marginRight={1}>
+                <Button key={`tab-${t.id}`} variant={isOn ? 'primary' : 'secondary'} onPress={() => setPanel($, () => ({ tab: t.id as CrewTab }))}>
+                  <Text color={isOn ? t.color : undefined} dimColor={!isOn}>
+                    {t.icon}
+                  </Text>{' '}
+                  <Text bold={isOn} dimColor={!isOn}>
+                    {t.label}
+                  </Text>{' '}
+                  <Text color={isOn ? t.color : undefined} dimColor={!isOn}>
+                    {String(t.count)}
+                  </Text>
+                </Button>
                 {Client ? (
-                  <Client key={ck(`tabhit-${t.id}`)} module="./hotspot.tsx" props={{ id: t.id, line: line.map(plainHot) } satisfies HotspotProps} />
-                ) : (
-                  <Button key={`tab-${t.id}`} plain onPress={() => setPanel($, () => ({ tab: t.id as CrewTab }))}>
-                    <Text color={isOn ? t.color : undefined} dimColor={!isOn}>
-                      {t.icon}
-                    </Text>{' '}
-                    <Text bold={isOn} dimColor={!isOn}>
-                      {t.label}
-                    </Text>{' '}
-                    <Text color={isOn ? t.color : undefined} dimColor>
-                      {String(t.count)}
-                    </Text>
-                  </Button>
-                )}
+                  <Box key={`tabhitbox-${t.id}`} position="absolute" top={0} left={0} right={0} bottom={0}>
+                    <Client key={ck(`tabhit-${t.id}`)} module="./hotspot.tsx" width="100%" height="100%" props={{ id: t.id }} />
+                  </Box>
+                ) : null}
               </Box>
             )
           })}

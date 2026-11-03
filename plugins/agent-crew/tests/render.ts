@@ -131,8 +131,9 @@ const isWide = (n: El): boolean => p(n).width === '100%'
 
 const buttonLabel = (n: El): Seg[] => {
   const q = p(n)
-  if (typeof q.label === 'string') return [{ t: q.label, dim: q.dimColor === true }]
-  return (n.children ?? []).flatMap(c => segsOf(c, { t: '', dim: q.dimColor === true }))
+  // Text children are what it draws; the label the host derives from them only names it.
+  if (n.children?.length) return n.children.flatMap(c => segsOf(c, { t: '', dim: q.dimColor === true }))
+  return typeof q.label === 'string' ? [{ t: q.label, dim: q.dimColor === true }] : []
 }
 
 // A diff or a file's text, in a code box: its first lines, the headers left out.
@@ -297,7 +298,8 @@ function draw(n: El, x: number, y: number, w: number, h: number): string {
       if (q.plain) return runs(label, x, baseline(y, h))
       const isPrimary = q.variant === 'primary'
       const rect = `<rect x="${x}" y="${y}" width="${w.toFixed(1)}" height="${h}" rx="6" class="${isPrimary ? 'b1' : 'b2'}"/>`
-      return rect + runs(label.map(s => ({ ...s, cls: isPrimary ? 'b1t' : 'tx' })), x + 10, baseline(y, h))
+      // A secondary button keeps the colours and dimming of its Text children (the agent tabs).
+      return rect + runs(label.map(s => (isPrimary ? { ...s, cls: 'b1t' } : s.c || s.dim ? s : { ...s, cls: 'tx' })), x + 10, baseline(y, h))
     }
     case 'Svg':
       return placeSvg(String(q.source ?? ''), x, y)

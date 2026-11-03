@@ -279,6 +279,23 @@ test('■ holds an agent TaskStop cannot end: its tool calls are denied until it
   expect(after.deny).toBeUndefined()
 })
 
+test('the desktop tabs are buttons like Compact, the chosen one primary', async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const ui = await mount($, 'desktop')
+  // The app's own button, no border of a Box, which takes a row above and below.
+  const active = await drawnPart(ui, 'tabbox-active')
+  expect(active).not.toContain('borderStyle')
+  expect(active).toContain('"variant":"primary"')
+  expect(await drawnPart(ui, 'tabbox-done')).toContain('"variant":"secondary"')
+  // A press lands on the click region over it, as on the Button where the region falls short.
+  await showTab(ui, 'desktop', 'done')
+  expect(await drawnPart(ui, 'tabbox-done')).toContain('"variant":"primary"')
+  await ui.press({ key: 'tab-active' })
+  expect(await drawnPart(ui, 'tabbox-active')).toContain('"variant":"primary"')
+})
+
 test('a desktop agent row leaves only the ▸ its click region draws at the right', async ($, on) => {
   engine(on)
   await start($)
@@ -1263,7 +1280,7 @@ async function drawnPart(ui: Mounted, key: string): Promise<string> {
   return JSON.stringify(part ?? null)
 }
 
-test('on the desktop a running dot pulses in a Client, in its row and on the Active tab; pictures hold no pulse', async ($, on) => {
+test('on the desktop a running dot pulses in a Client in its row; pictures hold no pulse', async ($, on) => {
   const { clock } = engine(on)
   await start($)
   await spawn($, 'Tests reparieren', 'Explore')
@@ -1279,7 +1296,6 @@ test('on the desktop a running dot pulses in a Client, in its row and on the Act
   // dots pulse in Clients, which keep their timer, and no picture tries.
   const pulses = (part: string) => part.includes('"pulse":true')
   expect(pulses(await drawnPart(desk, 'row-a1'))).toBe(true)
-  expect(pulses(await drawnPart(desk, 'tabbox-active'))).toBe(true)
   expect(JSON.stringify(await desk.drawn())).not.toContain('class=\\"live\\"')
   // The crab is a still of its walk at the clock's time, and the pane redraws it
   // a quarter second on: a flip book that no reload can cut off.
@@ -1299,9 +1315,8 @@ test('on the desktop a running dot pulses in a Client, in its row and on the Act
   await desk.key({ key: 'return', in: 'rowhit-a1' })
   expect(await drawnPart(desk, 'row-a1')).toContain('▾')
   await desk.key({ key: 'return', in: 'rowhit-a1' })
-  // Ended, the mark is a still picture, and the tab stops pulsing.
+  // Ended, the mark is a still picture.
   await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Fertig.', turnId: 't1' } as never)
-  expect(pulses(await drawnPart(desk, 'tabbox-active'))).toBe(false)
   await showTab(desk, 'desktop', 'done')
   expect(pulses(await drawnPart(desk, 'row-a1'))).toBe(false)
 })

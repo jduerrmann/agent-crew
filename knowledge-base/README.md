@@ -67,6 +67,7 @@ Rules:
 - [own-mod-one-pane](decisions/own-mod-one-pane.md): a mod of our own, not savvy; one pane for agents, timeline, files, usage; one hooks module
 - [configurable-sections](decisions/configurable-sections.md): framed sections, each with a switch; new features come with an option
 - [svg-desktop-text-terminal](decisions/svg-desktop-text-terminal.md): SVG with CSS animation on desktop, the same content as text in the terminal; timeline folds pauses
+- [tabs-as-buttons](decisions/tabs-as-buttons.md): desktop agent tabs are Buttons like Compact, the chosen one primary, a click region over each (user)
 - [narrow-pictures-wrap](decisions/narrow-pictures-wrap.md): in a narrow pane usage meters wrap into rows, a picture and click region each in the band; cost tokens go beneath (user)
 - [prompt-band](decisions/prompt-band.md): band above the prompt: crabs and counts, bars, usage rings, each an option; click opens the pane; stacks over others (user)
 - [settings-tab](decisions/settings-tab.md): `/crew-settings` tab and ⚙ button, written through `$.config.set` like `/config`
