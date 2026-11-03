@@ -83,9 +83,6 @@ type Lang = 'de' | 'en'
 const STRINGS = {
   de: {
     pane: 'Crew',
-    cost: 'Kosten',
-    tokens: 'Tokens',
-    time: 'Zeit',
     collapse: 'Kompakt',
     expand: 'Ausklappen',
     active: 'Aktiv',
@@ -102,12 +99,10 @@ const STRINGS = {
     teammate: 'Teammate',
     workflow: 'Workflow',
     tokensWord: 'Tokens',
-    agentsCount: 'Agenten',
     isRunning: 'läuft',
     isFinished: 'fertig',
     opened: 'Crew-Panel geöffnet.',
     closed: 'Crew-Panel geschlossen.',
-    details: 'Details',
     task: 'Auftrag',
     recent: 'Zuletzt',
     answer: 'Antwort',
@@ -178,9 +173,6 @@ const STRINGS = {
   },
   en: {
     pane: 'Crew',
-    cost: 'Cost',
-    tokens: 'Tokens',
-    time: 'Time',
     collapse: 'Compact',
     expand: 'Expand',
     active: 'Active',
@@ -197,12 +189,10 @@ const STRINGS = {
     teammate: 'teammate',
     workflow: 'workflow',
     tokensWord: 'tokens',
-    agentsCount: 'agents',
     isRunning: 'running',
     isFinished: 'finished',
     opened: 'Crew panel opened.',
     closed: 'Crew panel closed.',
-    details: 'Details',
     task: 'Task',
     recent: 'Recent',
     answer: 'Answer',
@@ -1639,7 +1629,6 @@ const crewCounts = (list: CrewRun[], fileList: CrewFile[]): CrewCount[] => {
 }
 
 const bandLines = (list: CrewRun[], fileList: CrewFile[], u: CrewUsage, at: number): BandLine[] => {
-  const s = tr()
   const lines: BandLine[] = []
   const sep: HotSeg = { t: '  ·  ', dim: true }
   const join = (parts: HotSeg[][]): HotSeg[] => parts.flatMap((p, i) => (i ? [sep, ...p] : p))
@@ -2631,7 +2620,6 @@ export const register: Register = (on, options) => {
       model: started.model,
       isBackground: e.background,
       parentId: e.parentAgentId,
-      workflowRunId: e.workflow?.runId || undefined,
       workflowIndex: e.workflow?.agentIndex,
       status: 'running',
       startedAt: at,

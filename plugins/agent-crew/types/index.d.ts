@@ -18,7 +18,6 @@ export type CrewRun = {
   effort?: string
   isBackground: boolean
   parentId?: string
-  workflowRunId?: string
   workflowIndex?: number
   status: CrewStatus
   startedAt: number
