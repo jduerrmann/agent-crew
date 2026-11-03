@@ -15,6 +15,7 @@ updated: 2026-10-11
 - **Clickable things the user reaches for while agents run are Clients that post on the press itself**, as the file rows have done all along ([client-file-rows](../decisions/client-file-rows.md)): `hooks/hotspot.tsx`.
   - A desktop agent row has a click region laid over its picture (`rowhit-<id>`, an absolute Box). A press anywhere opens or shuts its details, and the region draws the ▸ itself.
   - The Active and Finished tabs on the desktop are click regions inside their bordered Boxes (`tabhit-<id>`).
+  - ■ Stop and its Cancel in an agent's details (`stophit-<id>`), pressed while the agent runs.
   - The presses arrive as `ui.message` from those elements.
 - **The flip book runs only where it is needed:** while an agent runs on a desktop pane drawn in the last five seconds (`desktopDrawnAt`). The terminal keeps its one redraw a second.
 - **Still Buttons:** *Clear finished*, compact, the settings, the files filters and the file card's buttons. They are pressed rarely while agents run. Convert them too if clicks there get lost.

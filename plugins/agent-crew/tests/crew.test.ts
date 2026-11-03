@@ -198,6 +198,101 @@ const timelineOf = async ($: Engine, surface: Surface) => {
   return out
 }
 
+// TaskStop beneath the mod: what it was asked to stop, and whether it can.
+function taskStop(on: On) {
+  const state = { stopped: [] as string[], canStop: true }
+  on('tool.call', { tool: 'TaskStop' }, (_$, e) => {
+    const id = String((e as { task_id?: unknown }).task_id)
+    if (!state.canStop) return { deny: `No task found with ID: ${id}` } as never
+    state.stopped.push(id)
+    return { result: { message: `Successfully stopped task: ${id}`, task_id: id, task_type: 'local_agent' } } as never
+  })
+  return state
+}
+
+const pressStopChip = (ui: Mounted, key: string) => ui.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: key })
+
+test('■ in a running agent’s details asks once, then stops it through TaskStop', async ($, on) => {
+  // Before the engine's catch-all tool.call, so TaskStop answers here.
+  const stop = taskStop(on)
+  const { clock, toasts, status } = engine(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  await spawn($, 'Plan', 'Plan')
+  await $.turn.complete({ agentId: 'a2', reason: 'answer', answer: 'Fertig.', turnId: 't2' } as never)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    await openRun(ui, surface, 'a1')
+    expect(JSON.stringify(await ui.drawn())).toContain('■ Stoppen')
+    // The first press asks; Cancel takes it back.
+    await pressStopChip(ui, 'stophit-a1')
+    expect(JSON.stringify(await ui.drawn())).toContain('■ Wirklich stoppen?')
+    await pressStopChip(ui, 'stophit-a1-cancel')
+    expect(JSON.stringify(await ui.drawn())).not.toContain('Wirklich stoppen?')
+    await openRun(ui, surface, 'a1')
+    await ui.unmount()
+  }
+  // A finished agent has no ■.
+  const ui = await mount($, 'terminal')
+  await showTab(ui, 'terminal', 'done')
+  await openRun(ui, 'terminal', 'a2')
+  expect(await ui.find({ key: 'stophit-a2' })).toBeUndefined()
+  await showTab(ui, 'terminal', 'active')
+  // Asked and confirmed: TaskStop ends it by its agent id, and it counts as stopped.
+  await openRun(ui, 'terminal', 'a1')
+  await pressStopChip(ui, 'stophit-a1')
+  await pressStopChip(ui, 'stophit-a1')
+  await clock.advance(10)
+  expect(stop.stopped).toEqual(['a1'])
+  expect(toasts).toContain('■ Tests reparieren wurde gestoppt')
+  expect(status.at(-1)).toBeUndefined()
+  // The engine's own end of it brings no second notice.
+  await $.turn.complete({ agentId: 'a1', reason: 'aborted', answer: '', turnId: 't1' } as never)
+  expect(toasts.filter(t => t.includes('gestoppt')).length).toBe(1)
+  await showTab(ui, 'terminal', 'done')
+  expect(JSON.stringify(await ui.drawn())).toContain('gestoppt')
+})
+
+test('■ holds an agent TaskStop cannot end: its tool calls are denied until it ends, then it counts as stopped', async ($, on) => {
+  const stop = taskStop(on)
+  const { clock, toasts } = engine(on)
+  stop.canStop = false
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const ui = await mount($, 'desktop')
+  await openRun(ui, 'desktop', 'a1')
+  await pressStopChip(ui, 'stophit-a1')
+  await pressStopChip(ui, 'stophit-a1')
+  await clock.advance(10)
+  expect(toasts.at(-1)).toContain('wird angehalten')
+  expect(JSON.stringify(await ui.drawn())).toContain('wird angehalten')
+  // Its calls are refused with a reason it can act on; the main chat's are not.
+  const denied = (await $.tool.call({ tool: 'Read', file_path: '/work/a.ts', agentId: 'a1' } as never)) as { deny?: string }
+  expect(denied.deny).toContain('agent-crew')
+  const main = (await $.tool.call({ tool: 'Read', file_path: '/work/a.ts' } as never)) as { deny?: string }
+  expect(main.deny).toBeUndefined()
+  // It ends on its own: stopped, and the hold goes with it.
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Ich höre auf.', turnId: 't1' } as never)
+  await showTab(ui, 'desktop', 'done')
+  expect(JSON.stringify(await ui.drawn())).toContain('gestoppt')
+  const after = (await $.tool.call({ tool: 'Read', file_path: '/work/a.ts', agentId: 'a1' } as never)) as { deny?: string }
+  expect(after.deny).toBeUndefined()
+})
+
+test('a desktop agent row leaves only the ▸ its click region draws at the right', async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  await $.turn.complete({ agentId: 'a1', reason: 'aborted', answer: '', turnId: 't1' } as never)
+  const ui = await mount($, 'desktop')
+  await showTab(ui, 'desktop', 'done')
+  // 60 columns make a 440 px picture width: the row's picture takes all of it
+  // but the status mark (22) and two cells for the ▸ (16).
+  const [picture = ''] = await picturesIn(ui, 'row-a1')
+  expect(/<svg[^>]* width="(\d+)"/.exec(picture)?.[1]).toBe('402')
+  expect(JSON.stringify(await ui.drawn())).not.toContain('hitroom-')
+})
+
 test("a subagent's turn.start leaves the main chat's turn open in the timeline", async ($, on) => {
   const { clock } = engine(on)
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))

@@ -20,7 +20,7 @@ updated: 2026-10-11
 **Today:**
 - Desktop rows are pictures (`runSvg` in `hooks/register.tsx`; the desktop reloads them on every redraw, see [svg-redraw-restarts-animation](../../limits/svg-redraw-restarts-animation.md)) with a separate ▸ Button (`detailsButton`); pictures take no press ([builtin-components-fixed](../../limits/builtin-components-fixed.md)). Terminal rows are text with the same ▸.
 - Details (`details(r)`) show task, recent actions, files, answer, *Highlight its files* and *Copy answer*.
-- No stop exists. Open question in the index: can a mod stop a subagent?
+- ■ Stop is in the details of a running agent (`stopRow`, `pressStop`, `stopAgent` in `hooks/register.tsx`): a first press asks, a second calls TaskStop, Cancel takes the question back. Where TaskStop fails, the agent is held (`stopping` in the store): the `tool.call` hook denies its calls until its `turn.complete`, which then counts as stopped. A hotspot Client where the surface has one, else Buttons. Tests cover both ways; not yet tried in the app.
 
 **Approach:**
 1. **Spike, stop:** first part done ([stopping-subagents](../../limits/stopping-subagents.md)).
@@ -29,7 +29,8 @@ updated: 2026-10-11
    - Still to check, live in the mod: does the call pass the permission check without a dialog; does it stop a foreground subagent; workflow agents.
    - Fallback where TaskStop answers with an error: from the press on, the `tool.call` hook denies every call of that agent with a clear reason ("stopped from agent-crew"). The agent then ends on its own; mark the run `stopped`.
 2. **Clickable rows:** done on the desktop. A `hotspot.tsx` click region lies over each row's picture ([redraw-drops-button-clicks](../../limits/redraw-drops-button-clicks.md)). Left: the terminal rows still open by their ▸ Button only.
-3. **Details:** a small action row at the top: ■ Stop (running only, with a confirm), *Highlight its files*, *Copy answer*; then task, actions, files, answer as today.
+3. **Details:** ■ Stop sits at the top (done). Left: move *Highlight its files* and *Copy answer* into that row; then task, actions, files, answer as today.
+   - In the app, check: does TaskStop from the mod open a permission dialog; does it end a foreground subagent; does a held agent loop on denied calls or end. Record the answers in [stopping-subagents](../../limits/stopping-subagents.md).
 4. ■ also in the compact view? Only if it stays readable.
 
 **Options and text:** no option for stopping itself; texts de/en for the button, the confirm and the deny reason.

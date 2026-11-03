@@ -13,11 +13,13 @@ updated: 2026-11-03
 - `$.turn.abort({ turnId })` cancels only the main loop's running turn, as the host types say. A subagent's turn id is refused.
 - The built-in tool `TaskStop` takes a background task's id, and also a teammate's or a background agent's agent id or name. Tried on 2026-11-03 from the main chat: a background subagent stopped at once by its agent id (`task_type: "local_agent"`), and its task ended as `killed`. That is the status `$.agent.list()` reports, which the mod shows as stopped.
 
+- From the mod, ■ in the pane stopped a background subagent the same way on 2026-11-03: its task ended as `killed`, and the pane showed it as stopped.
+
 **Not checked yet:**
-- Whether a mod's `$.tool.call({ tool: 'TaskStop', task_id })` gets through the permission check without a dialog. The call runs through hooks and the permission check like the model's.
+- Whether the mod's `$.tool.call({ tool: 'TaskStop', task_id })` ever asks for permission. The call runs through hooks and the permission check like the model's. The user's try did stop the agent, but whether a dialog came first went unrecorded.
 - Whether a foreground subagent, which holds the main turn's Agent call, is a task that TaskStop knows.
 - Workflow agents: they are missing from `$.agent.list()`, so their ids may not be task ids.
 
-**Workaround:** for agents TaskStop doesn't know, the fallback in [agent-rows-and-stop](../plans/active/agent-rows-and-stop.md) still applies: the `tool.call` hook denies that agent's calls from the press on.
+**Workaround:** ■ in an agent's details calls TaskStop with the agent id (`stopAgent` in `hooks/register.tsx`). Where it fails, the agent is held: the `tool.call` hook denies its calls from the press on, and its next `turn.complete` counts as stopped ([agent-rows-and-stop](../plans/active/agent-rows-and-stop.md)).
 
 **Re-check when:** the host gains an agent stop call, or `turn.abort` accepts a subagent's turn.

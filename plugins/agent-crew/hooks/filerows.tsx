@@ -71,7 +71,7 @@ const FileRows: ClientModule<FileRowsProps, Local> = (props, surface) => {
     return (
       <Text key={k} bold={s.b}>
         {runs.map((run, i) => (
-          <Text key={i} color={run.c}>
+          <Text key={`c${i}`} color={run.c}>
             {run.t}
           </Text>
         ))}

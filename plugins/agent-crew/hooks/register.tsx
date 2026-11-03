@@ -46,6 +46,7 @@ const typeColors = atom({ plugin: 'agent-crew', key: 'typeColors' } as const, {}
 const mainTurns = atom({ plugin: 'agent-crew', key: 'mainTurns' } as const, [])
 const tasks = atom({ plugin: 'agent-crew', key: 'tasks' } as const, [])
 const mainReport = atom({ plugin: 'agent-crew', key: 'mainReport' } as const, null)
+const stopping = atom({ plugin: 'agent-crew', key: 'stopping' } as const, {})
 
 // The plugin's options, set by register on every (re)load.
 let opts: Record<string, unknown> = {}
@@ -139,6 +140,11 @@ const STRINGS = {
     agentDone: (name: string, time: string) => `✓ ${name} ist fertig (${time})`,
     agentFailed: (name: string) => `✗ ${name} ist fehlgeschlagen`,
     agentStopped: (name: string) => `■ ${name} wurde gestoppt`,
+    stop: '■ Stoppen',
+    stopConfirm: '■ Wirklich stoppen?',
+    stopCancel: 'Abbrechen',
+    stopHeld: (name: string) => `■ ${name} wird angehalten: seine Tool-Aufrufe werden abgelehnt, bis er endet`,
+    stopDeny: 'Von agent-crew gestoppt: keine weiteren Tool-Aufrufe. Beende jetzt mit einer kurzen Antwort.',
     limitWarn: (label: string, pct: number, reset: string) => `${label}-Limit bei ${pct} %${reset ? ` (${reset})` : ''}`,
     contextWarn: (pct: number) => `Kontext zu ${pct} % voll: /compact schafft Platz`,
     timeline: 'Zeitleiste',
@@ -229,6 +235,11 @@ const STRINGS = {
     agentDone: (name: string, time: string) => `✓ ${name} finished (${time})`,
     agentFailed: (name: string) => `✗ ${name} failed`,
     agentStopped: (name: string) => `■ ${name} was stopped`,
+    stop: '■ Stop',
+    stopConfirm: '■ Really stop?',
+    stopCancel: 'Cancel',
+    stopHeld: (name: string) => `■ Holding ${name}: its tool calls are denied until it ends`,
+    stopDeny: 'Stopped from agent-crew: no more tool calls. End now with a short answer.',
     limitWarn: (label: string, pct: number, reset: string) => `${label} limit at ${pct} %${reset ? ` (${reset})` : ''}`,
     contextWarn: (pct: number) => `Context ${pct} % full: /compact makes room`,
     timeline: 'Timeline',
@@ -2021,6 +2032,51 @@ async function announceEnd($: EngineInterface, r: CrewRun): Promise<void> {
   await notify($, r.status === 'done' ? s.agentDone(name, fmtTime(elapsed(r, at))) : r.status === 'failed' ? s.agentFailed(name) : s.agentStopped(name))
 }
 
+// ■ in an agent's details. TaskStop ends a subagent at once by its agent id
+// (stopping-subagents); where it cannot, the agent's tool calls are denied from
+// now on (`stopping`, the tool.call hook) until its run ends, and then it counts
+// as stopped. Runs in a dispatch of its own: the call may wait on a dialog.
+async function stopAgent($: EngineInterface, agentId: string): Promise<void> {
+  const run = (await read($, runs)).find(r => r.agentId === agentId)
+  if (!run || !isActive(run)) return
+  let isStopped = false
+  try {
+    const r = await $.tool.call({ tool: 'TaskStop', task_id: agentId })
+    isStopped = r.deny === undefined && !r.isError
+  } catch {
+    // No such tool here, or no such task: the deny below holds it instead.
+  }
+  const at = await $.clock.now()
+  const name = run.description || typeLabel(run)
+  if (isStopped) {
+    await update($, runs, list => list.map(r => (r.agentId === agentId && isActive(r) ? { ...r, status: 'stopped' as const, endedAt: at } : r)))
+    await update($, now, () => at)
+    await refreshStatus($)
+    await notify($, tr().agentStopped(name))
+  } else {
+    await update($, stopping, s => ({ ...s, [agentId]: at }))
+    await notify($, tr().stopHeld(name))
+  }
+}
+
+// A press on ■ (`stop:<run id>`) or on its Cancel (`cancel:<run id>`).
+async function pressStop($: EngineInterface, press: string): Promise<void> {
+  const [what, id = ''] = press.split(/:(.*)/s)
+  const p = await readPanel($)
+  if (what === 'cancel') {
+    if (p.stopAsk === id) await setPanel($, () => ({ stopAsk: undefined }))
+    return
+  }
+  if (what !== 'stop') return
+  if (p.stopAsk !== id) {
+    await setPanel($, () => ({ stopAsk: id }))
+    return
+  }
+  await setPanel($, () => ({ stopAsk: undefined }))
+  const agentId = (await read($, runs)).find(r => r.id === id)?.agentId
+  if (agentId) $.clock.after(1, () => void stopAgent($, agentId).catch(() => undefined))
+}
+
 // Warns once as a meter passes 80 % and again at 95 %; context from 85 %.
 async function warnLimits($: EngineInterface): Promise<void> {
   const s = tr()
@@ -2591,6 +2647,12 @@ export const register: Register = (on, options) => {
 
   // Every tool call, the main loop's and each subagent's: the log and the files.
   on('tool.call', async ($, e, next) => {
+    // An agent stopped from the pane that TaskStop could not end: no more calls.
+    if (e.agentId !== undefined && (await read($, stopping))[e.agentId] !== undefined) {
+      const denied = { deny: tr().stopDeny }
+      await record($, e.tool, e as unknown as Loose, undefined, false, e.agentId).catch(() => undefined)
+      return denied
+    }
     const result = await next(e)
     const input = e as unknown as Loose
     const out = (result as { result?: unknown }).result
@@ -2675,14 +2737,23 @@ export const register: Register = (on, options) => {
         await update($, now, () => at)
       }
     }
-    if (agentId && (await read($, runs)).some(r => r.agentId === agentId)) {
+    const before = agentId ? (await read($, runs)).find(r => r.agentId === agentId) : undefined
+    if (agentId && before) {
       const at = await $.clock.now()
+      // Held from the pane (stopAgent), it ends as stopped, however it ended; the hold goes with the run.
+      const isHeld = (await read($, stopping))[agentId] !== undefined
+      if (isHeld)
+        await update($, stopping, s => {
+          const { [agentId]: _gone, ...rest } = s
+          return rest
+        })
       await update($, runs, list =>
         list.map(r => {
           if (r.agentId !== agentId) return r
           // A teammate goes idle between turns and wakes on a message.
-          const status: CrewStatus =
-            e.reason === 'answer' ? (r.kind === 'teammate' ? 'idle' : 'done') : e.reason === 'aborted' ? 'stopped' : 'failed'
+          const status: CrewStatus = isHeld || r.status === 'stopped'
+            ? 'stopped'
+            : e.reason === 'answer' ? (r.kind === 'teammate' ? 'idle' : 'done') : e.reason === 'aborted' ? 'stopped' : 'failed'
           // A run whose steps went unseen still gets the turn's own sum.
           const fallback = r.steps === 0 && e.usage
           return {
@@ -2704,7 +2775,8 @@ export const register: Register = (on, options) => {
       await update($, now, () => at)
       await refreshStatus($)
       const run = (await read($, runs)).find(r => r.agentId === agentId)
-      if (run) void announceEnd($, run).catch(() => undefined)
+      // One stopped from the pane was announced there already.
+      if (run && before.status !== 'stopped') void announceEnd($, run).catch(() => undefined)
     }
     return next(e)
   })
@@ -2760,6 +2832,12 @@ export const register: Register = (on, options) => {
     if (element.startsWith('tabhit-') && (press === 'active' || press === 'done')) {
       await blurSearch($)
       await setPanel($, () => ({ tab: press }))
+      return {}
+    }
+    // ■ in an agent's details: the first press asks, the second stops, Cancel takes the question back.
+    if (element.startsWith('stophit-') && typeof press === 'string') {
+      await blurSearch($)
+      await pressStop($, press)
       return {}
     }
     if (element.startsWith('rowhit-') && typeof press === 'string') {
@@ -2979,6 +3057,37 @@ export const register: Register = (on, options) => {
           </Box>
         ) : null
 
+      // ■ for a running agent, asked once before it stops; held, it says so. A
+      // click region where the surface has one, since the pane redraws while the
+      // agent runs and a Button can lose its click then (redraw-drops-button-clicks).
+      const held = await read($, stopping)
+      const stopRow = (r: CrewRun) => {
+        if (!r.agentId || !isActive(r)) return null
+        if (held[r.agentId] !== undefined)
+          return (
+            <Text key={`stop-held-${r.id}`} color="#D0453F">
+              {s.stopHeld(r.description || typeLabel(r))}
+            </Text>
+          )
+        const isAsking = p.stopAsk === r.id
+        const chip = (key: string, id: string, label: string, isRed: boolean) =>
+          Client ? (
+            <Client
+              key={ck(key)}
+              module="./hotspot.tsx"
+              props={{ id, line: [plainHot({ t: ` ${label} `, c: isRed ? '#D0453F' : undefined, b: isRed && isAsking })], bg: '#6b6b6833', hoverBg: '#6b6b6866' } satisfies HotspotProps}
+            />
+          ) : (
+            <Button key={key} label={label} variant={isRed && isAsking ? 'primary' : 'secondary'} onPress={() => pressStop($, id)} />
+          )
+        return (
+          <Box key={`stop-row-${r.id}`} flexDirection="row" gap={1} marginBottom={1}>
+            {chip(`stophit-${r.id}`, `stop:${r.id}`, isAsking ? s.stopConfirm : s.stop, true)}
+            {isAsking ? chip(`stophit-${r.id}-cancel`, `cancel:${r.id}`, s.stopCancel, false) : null}
+          </Box>
+        )
+      }
+
       // --- one run's details: task, recent actions, files, answer.
       const details = (r: CrewRun) => {
         const entries = (r.agentId ? allLogs[r.agentId] : undefined) ?? []
@@ -2990,6 +3099,7 @@ export const register: Register = (on, options) => {
         const pad = ''
         return (
           <Box key={`det-${r.id}`} flexDirection="column" marginTop={1}>
+            {stopRow(r)}
             {r.prompt && (
               <Text dimColor wrap="wrap">
                 {pad}
@@ -3462,10 +3572,11 @@ export const register: Register = (on, options) => {
         const { Svg } = ui
         desktopDrawnAt = at
         const W = desktopW
-        // The row's picture leaves room at its right for the Details button. An
+        // The row's picture leaves room at its right for the ▸: two cells the
+        // click region draws it in, or the Details button where there is none. An
         // expanded agent and its details share a card framed in the agent's colour,
         // indented by its depth; the picture inside it draws no indent of its own.
-        const runW = W - 36
+        const runW = W - (Client ? 16 : 36)
         const row = ({ run, depth }: { run: CrewRun; depth: number }) => {
           const isOpen = p.expanded.includes(run.id)
           const w = isOpen ? runW - FRAME_COLS * 8 - depth * 16 : runW
@@ -3507,8 +3618,7 @@ export const register: Register = (on, options) => {
                 />
                 {mark}
               </Box>
-              {hit ? <Box key={`hitroom-${run.id}`} width={3} /> : detailsButton(run)}
-              {hit}
+              {hit ?? detailsButton(run)}
             </Box>
           )
           return isOpen ? (

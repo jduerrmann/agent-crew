@@ -85,6 +85,8 @@ export type CrewPanel = {
   isSearchFocused?: boolean
   /** An agent whose files are lit while the rest dim. */
   focusAgent?: string
+  /** The run whose ■ was pressed once and waits for the press that confirms it. */
+  stopAsk?: string
   isTimelineOpen: boolean
 }
 
@@ -190,6 +192,8 @@ declare module 'claude-code' {
       tasks: CrewTask[]
       /** The main chat's progress through its to-do list, for the timeline; null without one. */
       mainReport: CrewReport | null
+      /** Agents stopped from the pane that TaskStop could not end, and when: their tool calls are denied until their run ends. */
+      stopping: Record<string, number>
     }
   }
 }
