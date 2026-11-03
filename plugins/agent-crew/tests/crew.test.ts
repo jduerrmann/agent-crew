@@ -300,14 +300,20 @@ test('a desktop agent row leaves only the ▸ its click region draws at the righ
   engine(on)
   await start($)
   await spawn($, 'Tests reparieren', 'Explore')
-  await $.turn.complete({ agentId: 'a1', reason: 'aborted', answer: '', turnId: 't1' } as never)
+  await spawn($, 'Plan', 'Plan')
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Fertig.', turnId: 't1' } as never)
+  await $.turn.complete({ agentId: 'a2', reason: 'aborted', answer: '', turnId: 't2' } as never)
   const ui = await mount($, 'desktop')
   await showTab(ui, 'desktop', 'done')
   // 60 columns make a 440 px picture width: the row's picture takes all of it
   // but the status mark (22) and two cells for the ▸ (16).
-  const [picture = ''] = await picturesIn(ui, 'row-a1')
-  expect(/<svg[^>]* width="(\d+)"/.exec(picture)?.[1]).toBe('402')
+  const width = async (id: string) => /<svg[^>]* width="(\d+)"/.exec((await picturesIn(ui, `row-${id}`))[0] ?? '')?.[1]
+  expect(await width('a1')).toBe('402')
   expect(JSON.stringify(await ui.drawn())).not.toContain('hitroom-')
+  // A stopped one has no mark: its meta says so, and the picture takes the room.
+  expect(await drawnPart(ui, 'mark-a2')).toBe('null')
+  expect(await width('a2')).toBe('424')
+  expect(await drawnPart(ui, 'row-a2')).toContain('gestoppt')
 })
 
 test("a subagent's turn.start leaves the main chat's turn open in the timeline", async ($, on) => {

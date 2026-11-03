@@ -3565,9 +3565,11 @@ export const register: Register = (on, options) => {
           const w = isOpen ? runW - FRAME_COLS * 8 - depth * 16 : runW
           const d = isOpen ? 0 : depth
           // The status mark beside the picture: a running agent's dot pulses in a
-          // Client, any other mark is a still picture.
+          // Client, any other mark is a still picture. A stopped one has none: its
+          // meta says so and its bar is grey, and the picture takes the room.
+          const markW = run.status === 'stopped' ? 0 : MARK_W
           const mark =
-            run.status === 'running' && Client ? (
+            !markW ? null : run.status === 'running' && Client ? (
               <Box key={`mark-${run.id}`} flexShrink={0} width={3} justifyContent="center">
                 <Client key={ck(`pulse-${run.id}`)} module="./hotspot.tsx" props={{ line: [{ t: '●', c: colorOf(run), pulse: true }] } satisfies HotspotProps} />
               </Box>
@@ -3594,9 +3596,9 @@ export const register: Register = (on, options) => {
             <Box flexDirection="row" alignItems="flex-start" justifyContent="space-between">
               <Box flexDirection="row" alignItems="flex-start">
                 <Svg
-                  source={runSvg(w - MARK_W, run, d, byAgent, at, run.agentId !== undefined && run.agentId === viewed)}
+                  source={runSvg(w - markW, run, d, byAgent, at, run.agentId !== undefined && run.agentId === viewed)}
                   alt={`${run.description || typeLabel(run)}: ${typeLabel(run)}, ${modelName(run.model)}, ${isActive(run) ? s.isRunning : s.isFinished}`}
-                  width={w - MARK_W}
+                  width={w - markW}
                   height={ROW_H}
                 />
                 {mark}
