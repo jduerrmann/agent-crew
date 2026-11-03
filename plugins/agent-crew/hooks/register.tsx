@@ -361,8 +361,9 @@ const modelName = (id: string): string => {
   return `${family.charAt(0).toUpperCase()}${family.slice(1).toLowerCase()} ${major}${minor ? '.' + minor : ''}`
 }
 
+// The unit by what the number rounds to: 999,600 is `1.0M`, not `1000k`.
 const fmtTokens = (n: number): string =>
-  n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${Math.round(n)}`
+  n >= 999_500 ? `${(n / 1e6).toFixed(1)}M` : n >= 999.5 ? `${Math.round(n / 1e3)}k` : `${Math.round(n)}`
 
 const fmtCost = (usd: number): string => `$${usd < 10 ? usd.toFixed(2) : usd.toFixed(1)}`
 
@@ -650,8 +651,16 @@ async function reconcile($: EngineInterface): Promise<void> {
   }
   if (!list.length) return
   const at = await $.clock.now()
-  const next = [...(await read($, runs))]
   const retired = new Set((await read($, cleared)).ids ?? [])
+  if (!mergeListed(await read($, runs), list, retired, at).changed) return
+  // Merged into the list as it stands at the write, not as it was read: a step
+  // or a spawn that lands in between keeps its figures.
+  await storeRuns($, current => mergeListed(current, list, retired, at).next)
+  await refreshStatus($)
+}
+
+function mergeListed(current: readonly CrewRun[], list: readonly AgentInfo[], retired: ReadonlySet<string>, at: number): { next: CrewRun[]; changed: boolean } {
+  const next = [...current]
   let changed = false
   for (const info of list) {
     const i = next.findIndex(r => r.agentId === info.id)
@@ -689,9 +698,7 @@ async function reconcile($: EngineInterface): Promise<void> {
     next[i] = { ...run, status, endedAt: isTerminal(status) ? (run.endedAt ?? at) : undefined }
     changed = true
   }
-  if (!changed) return
-  await storeRuns($, () => next)
-  await refreshStatus($)
+  return { next, changed }
 }
 
 async function pushLog($: EngineInterface, agentId: string, entry: CrewLog): Promise<void> {

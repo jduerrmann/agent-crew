@@ -125,6 +125,10 @@ const READS: [string, string[], string?][] = [
   // Windows paths
   ['cat C:\\x\\a.ts', ['C:/x/a.ts']],
   ['type "C:\\x y\\a.ts"', ['C:/x y/a.ts']],
+  // a drive's root, then a relative path
+  ['cd C:\\ && cat a.ts', ['C:/a.ts']],
+  ['cd d:/ ; cat b.ts', ['D:/b.ts']],
+  ['cd / && cat etc.conf', ['/etc.conf']],
   // not readers
   ['ls a.ts', []],
   ['echo a.ts', []],

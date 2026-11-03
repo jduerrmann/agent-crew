@@ -1493,6 +1493,34 @@ test('the desktop band fits its counts to its width: words, then signs and numbe
   expect(narrow.end).toBeLessThanOrEqual(narrow.width)
 })
 
+test('a look at the agent list keeps the steps that land while it runs', async ($, on) => {
+  const listed: AgentInfo[] = []
+  engine(on, listed)
+  const tokens = modelSteps(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  await spawn($, 'Zweiter', 'Explore')
+  tokens.n = 1000
+  // The list brings an agent the mod never saw spawn, so the look writes; the
+  // steps arrive while it reads.
+  listed.push({ id: 'x9', type: 'Explore', description: 'Ungesehen', status: 'running' } as never)
+  await Promise.all([$.command.run({ command: 'crew', args: '' } as never), step($, 'a1'), step($, 'a2'), step($, 'a1'), step($, 'a2')])
+  const ui = await mount($, 'terminal')
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('Ungesehen')
+  expect((drawn.match(/2 Schritte/g) ?? []).length).toBe(2)
+})
+
+test('a token count that rounds up to a million reads 1.0M, not 1000k', async ($, on) => {
+  engine(on)
+  await start($)
+  await $.session.measure({ context: { percent: 99, tokens: 999_600, window: 1_000_000 }, rateLimits: [], changed: ['context'] } as never)
+  const ui = await mount($, 'terminal')
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('1.0M / 1.0M')
+  expect(drawn).not.toContain('1000k')
+})
+
 // The pictures inside the drawn element with this key: their sources.
 async function picturesIn(ui: { drawn: () => Promise<unknown> }, key: string): Promise<string[]> {
   let part: unknown

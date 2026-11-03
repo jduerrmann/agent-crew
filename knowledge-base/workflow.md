@@ -58,6 +58,7 @@ The pictures in `media/` come from `tests/media.test.ts`: each test plays a made
 - **Options:** read them as `opts.x !== false` when the default is on and `=== true` when it is off.
 - **Persisted fields:** new ones need a default in `PANEL_DEFAULT`, because state from older versions lacks them. Anything that grows needs a cap ([store-json-4mib](limits/store-json-4mib.md)).
 - **Background calls:** write fire-and-forget calls as `void f().catch(() => undefined)`. Skip writes when nothing changed.
+- **Store writes:** compute a write from the value `update` hands its callback, never from an earlier `read`. Hooks run side by side, and a write built on a stale read drops what landed in between (as `reconcile` once dropped subagents' steps).
 - **Licensing:** code taken from other projects needs a compatible license and an entry in `NOTICE` ([license](decisions/license-polyform-noncommercial.md)).
 
 ## Commits

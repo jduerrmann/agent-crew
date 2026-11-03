@@ -17,6 +17,8 @@ export const posix = (p: string): string =>
   (hasDrives ? p.replace(/\\/g, '/').replace(/^\/([A-Za-z])(\/|$)/, (_, d: string) => `${d.toUpperCase()}:/`) : p.replace(/\\/g, '/'))
     .replace(/^([a-z]):/, (_, d: string) => `${d.toUpperCase()}:`)
     .replace(/(.)\/+$/, '$1')
+    // A drive's root keeps its slash: `C:` alone is a drive's current folder, not its root.
+    .replace(/^([A-Z]:)$/, '$1/')
 
 export const isAbsolute = (p: string): boolean => p.startsWith('/') || /^[A-Za-z]:\//.test(p)
 
@@ -24,7 +26,8 @@ export function resolve(cwd: string, p: string, home = ''): string {
   let path = posix(p)
   if (home && (path === '~' || path.startsWith('~/'))) path = home + path.slice(1)
   const drive = /^[A-Za-z]:\//.test(path) ? path.slice(0, 2) : ''
-  const parts = isAbsolute(path) ? [drive] : posix(cwd).split('/')
+  // A root's own slash (`/`, `C:/`) leaves no empty part behind.
+  const parts = isAbsolute(path) ? [drive] : posix(cwd).split('/').filter((seg, i) => i === 0 || seg)
   for (const seg of path.slice(drive.length).split('/')) {
     if (!seg || seg === '.') continue
     if (seg === '..') {
