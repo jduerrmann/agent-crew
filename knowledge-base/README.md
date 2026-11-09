@@ -35,6 +35,7 @@ Rules:
 - [onpress-work-dropped](limits/onpress-work-dropped.md): async work started in onPress dies with the press; schedule it with `$.clock.after(1, …)`
 - [one-hook-per-event](limits/one-hook-per-event.md): a plugin gets one handler per event; a second `ui.message` hook is refused
 - [stopping-subagents](limits/stopping-subagents.md): `TaskStop` with the agent id stops a background subagent; `turn.abort` reaches the main loop only
+- [plugin-send-needs-a-request](limits/plugin-send-needs-a-request.md): in auto mode `$.session.send` to an agent gets no classifier verdict; no ✉ or ↻ from the pane
 - [subagents-events-only](limits/subagents-events-only.md): agents only via `agent.spawn` and `$.agent.list()`; the list lacks model and start time and lags
 - [no-cost-from-engine](limits/no-cost-from-engine.md): the engine gives tokens, not money or context window; estimated from `PRICES`
 - [usage-arrives-late](limits/usage-arrives-late.md): usage figures come only after a main-thread turn; empty until the first `session.measure`
@@ -101,7 +102,8 @@ Rules:
 - [readme-pictures-from-tests](decisions/readme-pictures-from-tests.md): `media/` drawn by the mod in `tests/media.test.ts`, laid out by `tests/render.ts`; light and dark
 - [review-and-verification](decisions/review-and-verification.md): check review findings against the code; every fix brings a regression test
 - [plans-in-knowledge-base](decisions/plans-in-knowledge-base.md): ideas live as plans, active or backlog, one per topic; deleted once done
-- [no-token-cost](decisions/no-token-cost.md): the mod never calls a model; no summaries or other features that spend tokens (user)
+- [tokens-only-on-the-persons-send](decisions/tokens-only-on-the-persons-send.md): the mod spends no tokens on its own; what the person sends from the pane may (user)
+- [no-token-cost](decisions/no-token-cost.md): superseded; nothing that spends tokens, not even the person's own send
 
 ## Plans
 
@@ -122,6 +124,6 @@ Read a plan, the notes it links and the code it points to before starting; check
 
 Never checked; check them before building on them, then turn the answer into a limit or a decision.
 
-- Does ■ (`TaskStop`) stop a foreground subagent? A background one stops by its agent id, with no dialog ([stopping-subagents](limits/stopping-subagents.md)). Can a mod message a waiting one?
+- Does ■ (`TaskStop`) stop a foreground subagent? A background one stops by its agent id, with no dialog ([stopping-subagents](limits/stopping-subagents.md)).
 - Does the update button work end to end against a real `claude`? The tests mock the command.
 - Do mods load in WSL sessions of the desktop app? filetree's README says no.

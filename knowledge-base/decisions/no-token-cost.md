@@ -1,11 +1,13 @@
 ---
 type: decision
 area: other
-status: active
+status: superseded
 date: 2026-10-11
 decided-by: user
-updated: 2026-10-11
+updated: 2026-11-09
 ---
+
+> Superseded by [tokens-only-on-the-persons-send](tokens-only-on-the-persons-send.md): what the person sends from the pane may cost tokens.
 
 # Nothing in agent-crew spends model tokens
 

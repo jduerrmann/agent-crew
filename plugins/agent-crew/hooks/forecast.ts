@@ -1,7 +1,7 @@
 // When a plan limit fills at the current pace. The engine reports a limit's
 // percentage after each main-thread turn (usage-arrives-late); a short history of
 // those readings gives the pace, and the pace the time left. Nothing here calls a
-// model (no-token-cost).
+// model (tokens-only-on-the-persons-send).
 
 /** One limit's recent readings: its window (when it resets) and `[at, percent]` samples, oldest first. */
 export type LimitHistory = { window?: string; samples: [number, number][] }

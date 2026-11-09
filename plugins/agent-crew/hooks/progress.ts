@@ -3,7 +3,7 @@ import type { CrewReport, CrewTask } from '../types'
 // Progress an agent shows of its own accord: the to-do list it keeps through
 // TodoWrite, or through TaskCreate and TaskUpdate. The mod only reads those
 // calls, so the bar fills for real without a tool or a token of its own
-// (decisions/no-token-cost.md).
+// (decisions/tokens-only-on-the-persons-send.md).
 
 type Loose = Record<string, unknown>
 

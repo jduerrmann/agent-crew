@@ -18,7 +18,7 @@ Add every note to the index. Routine changes need no note.
 
 What to build next lives in `knowledge-base/plans/`: `active/` in `priority:` order, `backlog/` only noted. Each plan stands alone for a fresh session.
 - **Taking one up:** read it, the notes it links and the code it points to; fix the plan where the code has moved. Start a backlog plan only when the user asks, and move it to `active/` with `git mv`.
-- **New ideas:** the user's go-ahead makes an active plan, anything else a backlog plan, from `knowledge-base/templates/plan.md`. Nothing that spends model tokens ([no-token-cost](knowledge-base/decisions/no-token-cost.md)).
+- **New ideas:** the user's go-ahead makes an active plan, anything else a backlog plan, from `knowledge-base/templates/plan.md`. Nothing that spends model tokens on its own; only what the person sends themselves may ([tokens-only-on-the-persons-send](knowledge-base/decisions/tokens-only-on-the-persons-send.md)).
 - **Done:** turn what was learned into decisions or limits, then delete the plan and its index line in the same commit.
 
 ## Rules
