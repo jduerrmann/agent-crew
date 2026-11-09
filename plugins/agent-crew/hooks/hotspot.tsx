@@ -14,6 +14,10 @@ export type HotspotProps = {
   /** One line of segments, or none; set to the right with `isRight`. */
   line?: HotSeg[]
   isRight?: boolean
+  /** Segments at the right end of the first line, beside `line`. */
+  right?: HotSeg[]
+  /** Lines below the first, each cut at the region's edge. */
+  more?: HotSeg[][]
   /** The region's background while the pointer is over it. */
   hoverBg?: string
   /** Its background otherwise: set, the region reads as a button. */
@@ -78,6 +82,27 @@ const Hotspot: ClientModule<HotspotProps, Local> = (props, surface) => {
       {s.t}
     </Text>
   )
+  const bg = state.hover && props.hoverBg ? props.hoverBg : props.bg
+  // Several lines, or a right end: a block of text rows that is a press as a whole,
+  // as a terminal agent row is. The first line gives way to its right end.
+  if (props.more || props.right)
+    return (
+      <Box flexDirection="column" width="100%" height="100%" backgroundColor={bg}>
+        <Box key="first" flexDirection="row" width="100%" justifyContent="space-between">
+          <Box key="left" flexShrink={1}>
+            <Text wrap="truncate-end">{(props.line ?? []).map((s, i) => draw(s, `s${i}`))}</Text>
+          </Box>
+          <Box key="right" flexShrink={0}>
+            <Text>{(props.right ?? []).map((s, i) => draw(s, `r${i}`))}</Text>
+          </Box>
+        </Box>
+        {(props.more ?? []).map((l, j) => (
+          <Text key={`m${j}`} wrap="truncate-end">
+            {l.map((s, i) => draw(s, `m${j}-${i}`))}
+          </Text>
+        ))}
+      </Box>
+    )
   return (
     <Box
       flexDirection="row"
@@ -85,7 +110,7 @@ const Hotspot: ClientModule<HotspotProps, Local> = (props, surface) => {
       height="100%"
       justifyContent={props.isRight ? 'flex-end' : 'flex-start'}
       alignItems="flex-start"
-      backgroundColor={state.hover && props.hoverBg ? props.hoverBg : props.bg}
+      backgroundColor={bg}
     >
       <Text wrap="truncate-end">{(props.line ?? []).map((s, i) => draw(s, `s${i}`))}</Text>
     </Box>

@@ -17,7 +17,7 @@ updated: 2026-10-11
 
 **Approach:**
 - In the file rows' Client: ↑↓ (and j/k) move a cursor row, Enter opens the card, `o` opens the file, `c` copies the path, `/` jumps to the search, `1`/`2`/`3` pick the filter.
-- Agent rows the same, once they are a Client ([agent-rows-and-stop](../active/agent-rows-and-stop.md)); `s` stops.
+- Agent rows the same: each is a hotspot Client already, which takes Enter and Space ([agent-row-click-and-stop](../../decisions/agent-row-click-and-stop.md)); `s` stops.
 - A hint line with the keys at the bottom of the pane, shown while a Client holds the keys.
 
 **Risks and open questions:** a Client gets keys only after a click gives it the focus, and never hears it lost them ([client-no-blur-event](../../limits/client-no-blur-event.md)). filetree has arrow keys and Enter; look at how it shows the cursor.

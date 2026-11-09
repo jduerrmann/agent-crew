@@ -82,15 +82,14 @@ const expandAll = async (ui: Mounted) => {
 }
 const hasRow = async (ui: Mounted, id: string) => JSON.stringify(await ui.drawn()).includes(`"id":"${id}"`)
 
-// An agent's row and the tabs: Buttons in the terminal; on the desktop, click
-// regions (hotspot.tsx) that take the press itself.
+// An agent's row is a click region (hotspot.tsx) on both surfaces, which takes
+// the press itself; the tabs are one in the terminal, regions on the desktop.
 type Surface = (typeof SURFACES)[number]
 const hasRun = async (ui: Mounted, id: string) => {
   const drawn = JSON.stringify(await ui.drawn())
   return drawn.includes(`"key":"d-${id}"`) || drawn.includes(`"key":"rowhit-${id}"`)
 }
-const openRun = (ui: Mounted, surface: Surface, id: string) =>
-  surface === 'desktop' ? ui.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: `rowhit-${id}` }) : ui.press({ key: `d-${id}` })
+const openRun = (ui: Mounted, _surface: Surface, id: string) => ui.pointer({ type: 'down', x: 2, y: 0, button: 'left', in: `rowhit-${id}` })
 const showTab = (ui: Mounted, surface: Surface, tab: 'active' | 'done') =>
   surface === 'desktop'
     ? ui.pointer({ type: 'down', x: 1, y: 0, button: 'left', in: `tabhit-${tab}` })
@@ -251,6 +250,65 @@ test('■ in a running agent’s details asks once, then stops it through TaskSt
   expect(toasts.filter(t => t.includes('gestoppt')).length).toBe(1)
   await showTab(ui, 'terminal', 'done')
   expect(JSON.stringify(await ui.drawn())).toContain('gestoppt')
+})
+
+test('a terminal agent row opens on a press anywhere on its lines', async ($, on) => {
+  engine(on)
+  await start($)
+  await spawn($, 'Tests reparieren', 'Explore')
+  const ui = await mount($, 'terminal')
+  // One click region holds the row's lines: name and status, type, bar.
+  const row = await drawnPart(ui, 'rowhit-a1')
+  expect(row).toContain('Tests reparieren')
+  expect(row).toContain('ctx ')
+  expect(row).toContain('▸')
+  expect(await ui.find({ key: 'd-a1' })).toBeUndefined()
+  // A press on its last line opens it, as one on its first does.
+  await ui.pointer({ type: 'down', x: 4, y: 2, button: 'left', in: 'rowhit-a1' })
+  expect(await drawnPart(ui, 'rowhit-a1')).toContain('▾')
+  expect(JSON.stringify(await ui.drawn())).toContain('■ Stoppen')
+  await ui.key({ key: 'return', in: 'rowhit-a1' })
+  expect(await drawnPart(ui, 'rowhit-a1')).toContain('▸')
+})
+
+test('an agent’s actions sit in one row atop its details: ■, its files, its answer', async ($, on) => {
+  const { toasts } = engine(on)
+  const copied: string[] = []
+  on('ui.copy', (_$, e) => (copied.push((e as { text: string }).text), { value: undefined }) as never)
+  await start($)
+  await spawn($, 'Erster', 'general-purpose')
+  await spawn($, 'Zweiter', 'general-purpose')
+  await $.tool.call({ tool: 'Read', file_path: '/work/a.ts', agentId: 'a1' } as never)
+  await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'Alles gelesen.', turnId: 't1' } as never)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    // Running, with nothing touched and no answer yet: ■ alone.
+    await openRun(ui, surface, 'a2')
+    const running = await drawnPart(ui, 'actions-row-a2')
+    expect(running).toContain('stophit-a2')
+    expect(running).not.toContain('focushit-a2')
+    expect(running).not.toContain('copyhit-a2')
+    await openRun(ui, surface, 'a2')
+    // Finished, with a file and an answer: no ■, the other two side by side.
+    await showTab(ui, surface, 'done')
+    await openRun(ui, surface, 'a1')
+    const done = await drawnPart(ui, 'actions-row-a1')
+    expect(done).not.toContain('stophit-a1')
+    expect(done).toContain('Seine Dateien hervorheben')
+    expect(done).toContain('Antwort kopieren')
+    await pressStopChip(ui, 'focushit-a1')
+    expect(JSON.stringify(await ui.drawn())).toContain('"key":"focus-clear"')
+    expect(await drawnPart(ui, 'actions-row-a1')).toContain('Hervorhebung aufheben')
+    await pressStopChip(ui, 'focushit-a1')
+    expect(JSON.stringify(await ui.drawn())).not.toContain('"key":"focus-clear"')
+    await pressStopChip(ui, 'copyhit-a1')
+    expect(copied.at(-1)).toBe('Alles gelesen.')
+    expect(toasts.at(-1)).toBe('Antwort kopiert.')
+    await openRun(ui, surface, 'a1')
+    await showTab(ui, surface, 'active')
+    await ui.unmount()
+  }
+  expect(copied.length).toBe(2)
 })
 
 test('■ holds an agent TaskStop cannot end: its tool calls are denied until it ends, then it counts as stopped', async ($, on) => {
@@ -959,7 +1017,7 @@ test("clearing finished agents lifts a focus on one of them", async ($, on) => {
   const ui = await mount($, 'desktop')
   await showTab(ui, 'desktop', 'done')
   await openRun(ui, 'desktop', 'a1')
-  await ui.press({ key: 'focus-a1' })
+  await pressStopChip(ui, 'focushit-a1')
   expect(JSON.stringify(await ui.drawn())).toContain('"key":"focus-clear"')
   await ui.press({ key: 'clear' })
   const drawn = JSON.stringify(await ui.drawn())
@@ -1286,6 +1344,9 @@ async function step($: Engine, agentId: string) {
 
 // The terminal's bar of an agent row: one text of twenty cells, in eighths
 // (the usage meters split theirs in two).
+// Whether the pane shows a text: as a Text, or in a click region's segments, where
+// a terminal agent row draws its lines.
+const shows = async (ui: Mounted, re: RegExp) => (await ui.find({ text: re })) !== undefined || re.test(JSON.stringify(await ui.drawn()))
 const barText = async (ui: Mounted) => /"([░█▏▎▍▌▋▊▉]{20})"/.exec(JSON.stringify(await ui.drawn()))?.[1] ?? ''
 // How full it is, in eighths of a cell.
 const eighthsOf = (bar: string) => [...bar].reduce((n, c) => n + (c === '█' ? 8 : Math.max(0, '▏▎▍▌▋▊▉'.indexOf(c) + 1)), 0)
@@ -1299,8 +1360,8 @@ test("an agent's bar estimates: it grows with time and steps, stops short of ful
   tokens.n = 333_000
   await step($, 'a1')
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ text: /ctx 33%/ })).toBeDefined()
-  expect(await ui.find({ text: /1 Schritt/ })).toBeDefined()
+  expect(await shows(ui, /ctx 33%/)).toBe(true)
+  expect(await shows(ui, /1 Schritt/)).toBe(true)
   const atStart = eighthsOf(await barText(ui))
   expect(atStart).toBeLessThan(8 * 3)
   // A minute on, it has grown.
@@ -1839,9 +1900,9 @@ test("a worker's reported steps fill its bar for real, with the step under way",
   await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 3, note: 'Tests schreiben', agentId: 'a1' } as never)
   const ui = await mount($, 'terminal')
   expect(await barText(ui)).toBe('█'.repeat(12) + '░'.repeat(8))
-  expect(await ui.find({ text: /3\/5 · Tests schreiben/ })).toBeDefined()
+  expect(await shows(ui, /3\/5 · Tests schreiben/)).toBe(true)
   // The report is no action: the last one stays the read.
-  expect(await ui.find({ text: /› Read/ })).toBeDefined()
+  expect(await shows(ui, /› Read/)).toBe(true)
   const desk = await mount($, 'desktop')
   expect(JSON.stringify(await desk.drawn())).toContain('3/5 · Tests schreiben')
 })
@@ -1859,9 +1920,9 @@ test("an agent's own to-do list fills its bar for real, with the step under way,
   await $.tool.call({ tool: 'TodoWrite', ...todos(['Lesen', 'Umbauen', 'Testen', 'Aufräumen', 'Melden'], 3), agentId: 'a1' } as never)
   const ui = await mount($, 'terminal')
   expect(await barText(ui)).toBe('█'.repeat(12) + '░'.repeat(8))
-  expect(await ui.find({ text: /3\/5 · Aufräumen läuft/ })).toBeDefined()
+  expect(await shows(ui, /3\/5 · Aufräumen läuft/)).toBe(true)
   // Writing the list is no action: the last one stays the read.
-  expect(await ui.find({ text: /› Read/ })).toBeDefined()
+  expect(await shows(ui, /› Read/)).toBe(true)
   // In the agent's log it reads as where the list stands, not as its tool's name twice.
   await openRun(ui, 'terminal', 'a1')
   const logged = /"children":\["TodoWrite"\]\}," ","([^"]*)"/.exec(JSON.stringify(await ui.drawn()))?.[1]
@@ -1880,12 +1941,12 @@ test("TaskCreate and TaskUpdate keep an agent's tasks; its bar counts the comple
   await $.tool.call({ tool: 'TaskUpdate', taskId: 'Lesen', status: 'completed', agentId: 'a1' } as never)
   await $.tool.call({ tool: 'TaskUpdate', taskId: 'Umbauen', status: 'in_progress', agentId: 'a1' } as never)
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ text: /1\/3 · Umbauen läuft/ })).toBeDefined()
+  expect(await shows(ui, /1\/3 · Umbauen läuft/)).toBe(true)
   await ui.unmount()
   // A deleted task leaves the count.
   await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', status: 'deleted', agentId: 'a1' } as never)
   const after = await mount($, 'terminal')
-  expect(await after.find({ text: /1\/2 · Umbauen läuft/ })).toBeDefined()
+  expect(await shows(after, /1\/2 · Umbauen läuft/)).toBe(true)
 })
 
 test("the main chat's to-do list shows beside it in the timeline while steps are open", async ($, on) => {
@@ -1948,7 +2009,7 @@ test('a task given to another agent counts for its new owner, whoever updates it
   // a1 works on it: its own update lands.
   await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', status: 'in_progress', agentId: 'a1' } as never)
   let ui = await mount($, 'terminal')
-  expect(await ui.find({ text: /0\/1 · Testen läuft/ })).toBeDefined()
+  expect(await shows(ui, /0\/1 · Testen läuft/)).toBe(true)
   await ui.unmount()
   // Handed on to a2 by a1: a1's bar goes back to the estimate, a2's shows the task.
   await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', owner: 'a2', agentId: 'a1' } as never)
@@ -1968,21 +2029,21 @@ test('an emptied list takes the bar back to the estimate: TodoWrite with no step
   await spawn($, 'Umbau Auth', 'general-purpose')
   await $.tool.call({ tool: 'TodoWrite', ...todos(['Lesen', 'Umbauen', 'Testen'], 1), agentId: 'a1' } as never)
   let ui = await mount($, 'terminal')
-  expect(await ui.find({ text: /1\/3 · Umbauen läuft/ })).toBeDefined()
+  expect(await shows(ui, /1\/3 · Umbauen läuft/)).toBe(true)
   await ui.unmount()
   await $.tool.call({ tool: 'TodoWrite', todos: [], agentId: 'a1' } as never)
   ui = await mount($, 'terminal')
-  expect(await ui.find({ text: /1\/3/ })).toBeUndefined()
+  expect(await shows(ui, /1\/3/)).toBe(false)
   await ui.unmount()
   // The same through the task calls: the last one deleted.
   await $.tool.call({ tool: 'TaskCreate', subject: 'Testen', description: 'Testen', activeForm: 'Testen läuft', agentId: 'a1' } as never)
   await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', status: 'in_progress', agentId: 'a1' } as never)
   ui = await mount($, 'terminal')
-  expect(await ui.find({ text: /0\/1 · Testen läuft/ })).toBeDefined()
+  expect(await shows(ui, /0\/1 · Testen läuft/)).toBe(true)
   await ui.unmount()
   await $.tool.call({ tool: 'TaskUpdate', taskId: 'Testen', status: 'deleted', agentId: 'a1' } as never)
   ui = await mount($, 'terminal')
-  expect(await ui.find({ text: /0\/1/ })).toBeUndefined()
+  expect(await shows(ui, /0\/1/)).toBe(false)
 })
 
 test('a file changed and restored leaves Changes, and stays in Activity', async ($, on) => {

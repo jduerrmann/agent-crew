@@ -2053,9 +2053,23 @@ async function stopAgent($: EngineInterface, agentId: string): Promise<void> {
   }
 }
 
-// A press on ■ (`stop:<run id>`) or on its Cancel (`cancel:<run id>`).
-async function pressStop($: EngineInterface, press: string): Promise<void> {
+// A press in an agent's actions row: ■ (`stop:<run id>`) or its Cancel
+// (`cancel:<run id>`), *Highlight its files* (`focus:…`), *Copy answer* (`copy:…`).
+async function pressAction($: EngineInterface, press: string): Promise<void> {
   const [what, id = ''] = press.split(/:(.*)/s)
+  if (what === 'focus' || what === 'copy') {
+    const run = (await read($, runs)).find(r => r.id === id)
+    if (!run) return
+    if (what === 'focus') {
+      const agentId = run.agentId
+      if (agentId) await setPanel($, q => ({ focusAgent: q.focusAgent === agentId ? undefined : agentId }))
+      return
+    }
+    if (!run.lastAnswer) return
+    await $.ui.copy({ text: run.lastAnswer })
+    $.ui.toast(tr().copied)
+    return
+  }
   const p = await readPanel($)
   if (what === 'cancel') {
     if (p.stopAsk === id) await setPanel($, () => ({ stopAsk: undefined }))
@@ -2827,10 +2841,11 @@ export const register: Register = (on, options) => {
       await setPanel($, () => ({ tab: press }))
       return {}
     }
-    // ■ in an agent's details: the first press asks, the second stops, Cancel takes the question back.
-    if (element.startsWith('stophit-') && typeof press === 'string') {
+    // An agent's actions row: ■ asks first, the second press stops, Cancel takes
+    // the question back; *Highlight its files* and *Copy answer* act at once.
+    if (/^(stop|focus|copy)hit-/.test(element) && typeof press === 'string') {
       await blurSearch($)
-      await pressStop($, press)
+      await pressAction($, press)
       return {}
     }
     if (element.startsWith('rowhit-') && typeof press === 'string') {
@@ -3033,20 +3048,15 @@ export const register: Register = (on, options) => {
           </Box>
         ) : null
 
-      // ■ for a running agent, asked once before it stops; held, it says so. A
-      // click region where the surface has one, since the pane redraws while the
-      // agent runs and a Button can lose its click then (redraw-drops-button-clicks).
+      // What can be done with an agent, atop its details: ■ for a running one,
+      // asked once before it stops, then *Highlight its files* and *Copy answer*.
+      // Held, ■ gives way to a line that says so. Click regions where the surface
+      // has them, since the pane redraws while agents run and a Button can lose its
+      // click then (redraw-drops-button-clicks); Buttons with the same presses elsewhere.
       const held = await read($, stopping)
-      const stopRow = (r: CrewRun) => {
-        if (!r.agentId || !isActive(r)) return null
-        if (held[r.agentId] !== undefined)
-          return (
-            <Text key={`stop-held-${r.id}`} color="#D0453F">
-              {s.stopHeld(r.description || typeLabel(r))}
-            </Text>
-          )
+      const actionsRow = (r: CrewRun, hasFiles: boolean) => {
         const isAsking = p.stopAsk === r.id
-        const chip = (key: string, id: string, label: string, isRed: boolean) =>
+        const chip = (key: string, id: string, label: string, isRed = false) =>
           Client ? (
             <Client
               key={ck(key)}
@@ -3054,17 +3064,35 @@ export const register: Register = (on, options) => {
               props={{ id, line: [plainHot({ t: ` ${label} `, c: isRed ? '#D0453F' : undefined, b: isRed && isAsking })], bg: '#6b6b6833', hoverBg: '#6b6b6866' } satisfies HotspotProps}
             />
           ) : (
-            <Button key={key} label={label} variant={isRed && isAsking ? 'primary' : 'secondary'} onPress={() => pressStop($, id)} />
+            <Button key={key} label={label} variant={isRed && isAsking ? 'primary' : 'secondary'} onPress={() => pressAction($, id)} />
           )
+        const isHeld = r.agentId !== undefined && held[r.agentId] !== undefined
+        const canStop = r.agentId !== undefined && isActive(r) && !isHeld
+        const chips = [
+          ...(canStop ? [chip(`stophit-${r.id}`, `stop:${r.id}`, isAsking ? s.stopConfirm : s.stop, true)] : []),
+          ...(canStop && isAsking ? [chip(`stophit-${r.id}-cancel`, `cancel:${r.id}`, s.stopCancel)] : []),
+          ...(hasFiles ? [chip(`focushit-${r.id}`, `focus:${r.id}`, p.focusAgent === r.agentId ? s.focusOff : s.focusOn)] : []),
+          ...(r.lastAnswer ? [chip(`copyhit-${r.id}`, `copy:${r.id}`, s.copy)] : []),
+        ]
+        if (chips.length === 0 && !(isHeld && isActive(r))) return null
         return (
-          <Box key={`stop-row-${r.id}`} flexDirection="row" gap={1} marginBottom={1}>
-            {chip(`stophit-${r.id}`, `stop:${r.id}`, isAsking ? s.stopConfirm : s.stop, true)}
-            {isAsking ? chip(`stophit-${r.id}-cancel`, `cancel:${r.id}`, s.stopCancel, false) : null}
+          <Box key={`actions-${r.id}`} flexDirection="column" marginBottom={1}>
+            {isHeld && isActive(r) && (
+              <Text key={`stop-held-${r.id}`} color="#D0453F">
+                {s.stopHeld(r.description || typeLabel(r))}
+              </Text>
+            )}
+            {chips.length > 0 && (
+              // Wraps in a narrow pane rather than pushing the last chip out.
+              <Box key={`actions-row-${r.id}`} flexDirection="row" flexWrap="wrap" gap={1}>
+                {chips}
+              </Box>
+            )}
           </Box>
         )
       }
 
-      // --- one run's details: task, recent actions, files, answer.
+      // --- one run's details: what can be done, task, recent actions, files, answer.
       const details = (r: CrewRun) => {
         const entries = (r.agentId ? allLogs[r.agentId] : undefined) ?? []
         const recent = entries.slice(-10).reverse()
@@ -3075,7 +3103,7 @@ export const register: Register = (on, options) => {
         const pad = ''
         return (
           <Box key={`det-${r.id}`} flexDirection="column" marginTop={1}>
-            {stopRow(r)}
+            {actionsRow(r, mine.length > 0)}
             {r.prompt && (
               <Text dimColor wrap="wrap">
                 {pad}
@@ -3112,18 +3140,10 @@ export const register: Register = (on, options) => {
               </Text>
             ))}
             {mine.length > 0 && (
-              <Box flexDirection="row" gap={1}>
-                <Text dimColor>
-                  {pad}
-                  {s.touched(reads, writes)}
-                </Text>
-                <Button
-                  key={`focus-${r.id}`}
-                  label={p.focusAgent === r.agentId ? s.focusOff : s.focusOn}
-                  plain
-                  onPress={() => setPanel($, q => ({ focusAgent: q.focusAgent === r.agentId ? undefined : r.agentId }))}
-                />
-              </Box>
+              <Text dimColor>
+                {pad}
+                {s.touched(reads, writes)}
+              </Text>
             )}
             {r.lastAnswer && (
               <Text bold>
@@ -3137,17 +3157,6 @@ export const register: Register = (on, options) => {
               ) : (
                 <Text wrap="wrap">{oneLine(r.lastAnswer, 600)}</Text>
               ))}
-            {r.lastAnswer && (
-              <Button
-                key={`copy-${r.id}`}
-                label={s.copy}
-                plain
-                onPress={async () => {
-                  await $.ui.copy({ text: r.lastAnswer ?? '' })
-                  $.ui.toast(s.copied)
-                }}
-              />
-            )}
           </Box>
         )
       }
@@ -3703,8 +3712,41 @@ export const register: Register = (on, options) => {
         // Inside its card an expanded agent takes its indent from the card.
         const pad = isOpen ? '' : '  '.repeat(depth)
         const isViewed = run.agentId !== undefined && run.agentId === viewed
+        const card = isOpen ? cardOf(run, depth) : { flexDirection: 'column' as const }
+        const statusColor = run.status === 'failed' ? 'red' : run.status === 'done' ? 'green' : color
+        // With a Client the row's lines are one click region, as on the desktop: a
+        // press anywhere on them opens or shuts the details, on the press itself.
+        if (Client) {
+          const name = run.description || typeLabel(run)
+          const head: HotSeg[] = [
+            { t: `${pad}${depth && !isOpen ? '└' : ''}${isViewed ? '▶' : '▣'} `, c: color },
+            { t: `${name} `, b: true },
+            { t: STATUS_GLYPH[run.status], c: statusColor },
+          ]
+          const more: HotSeg[][] = [
+            [{ t: `${pad}  ${typeLabel(run)} · ${metaOf(run, byAgent).join(' · ')}`, dim: true }],
+            ...(run.lastAction ? [[{ t: `${pad}  › ${run.lastAction}`, dim: true }]] : []),
+            [
+              { t: `${pad}  ` },
+              { t: bar(agentBar), c: agentBar.color },
+              ...(agentBar.label ? [{ t: ` ${agentBar.label}` }] : []),
+              { t: ` ctx ${ctx}% · ${fmtTokens(run.contextTokens)} ≈${fmtCost(run.costUsd)} ${fmtTime(elapsed(run, at))}`, dim: true },
+            ],
+          ]
+          return (
+            <Box key={`row-${run.id}`} {...card} marginBottom={1}>
+              <Client
+                key={ck(`rowhit-${run.id}`)}
+                module="./hotspot.tsx"
+                width="100%"
+                props={{ id: run.id, line: head.map(plainHot), right: [{ t: isOpen ? '▾' : '▸' }], more: more.map(l => l.map(plainHot)), hoverBg: '#3a3a3826' } satisfies HotspotProps}
+              />
+              {isOpen && details(run)}
+            </Box>
+          )
+        }
         return (
-          <Box key={`row-${run.id}`} {...(isOpen ? cardOf(run, depth) : { flexDirection: 'column' as const })} marginBottom={1}>
+          <Box key={`row-${run.id}`} {...card} marginBottom={1}>
             <Box flexDirection="row" justifyContent="space-between">
               <Box flexDirection="row" gap={1} flexShrink={1}>
                 <Text color={color}>

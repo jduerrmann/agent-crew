@@ -79,6 +79,7 @@ Rules:
 - [agent-type-look](decisions/agent-type-look.md): a colour per type, new ones kept in the store; detective for general-purpose; no savvy crabs; no forced type (user)
 - [progress-from-todo-lists](decisions/progress-from-todo-lists.md): bars and main row read TodoWrite/TaskCreate/TaskUpdate; no step tool of our own, no tokens (user)
 - [agents-section-waits](decisions/agents-section-waits.md): the agents section (tabs, Compact) appears only once a subagent ran; empty tabs said nothing (user)
+- [agent-row-click-and-stop](decisions/agent-row-click-and-stop.md): a click anywhere on an agent row opens it; details start with ■ Stop, Highlight, Copy answer as chips
 - [agent-bar-no-made-up-progress](decisions/agent-bar-no-made-up-progress.md): superseded; a moving band instead of a fill, found too restless
 
 ### Files
@@ -106,7 +107,6 @@ Rules:
 Read a plan, the notes it links and the code it points to before starting; check its pointers against the code first.
 
 ### Active, in order
-4. [agent-rows-and-stop](plans/active/agent-rows-and-stop.md): click anywhere on an agent's row; ■ stops a subagent (spike: turn.abort, TaskStop, deny) (M)
 5. [burn-rate](plans/active/burn-rate.md): forecast when a limit runs out at the current pace; optional cost limit per agent (M)
 6. [file-lock](plans/active/file-lock.md): optional lock refuses a second agent's edit of a file another running agent is changing (M)
 

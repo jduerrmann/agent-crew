@@ -20,6 +20,6 @@ updated: 2026-11-03
 - Whether a foreground subagent, which holds the main turn's Agent call, is a task that TaskStop knows.
 - Workflow agents: they are missing from `$.agent.list()`, so their ids may not be task ids.
 
-**Workaround:** ■ in an agent's details calls TaskStop with the agent id (`stopAgent` in `hooks/register.tsx`). Where it fails, the agent is held: the `tool.call` hook denies its calls from the press on, and its next `turn.complete` counts as stopped ([agent-rows-and-stop](../plans/active/agent-rows-and-stop.md)).
+**Workaround:** ■ in an agent's details calls TaskStop with the agent id (`stopAgent` in `hooks/register.tsx`). Where it fails, the agent is held: the `tool.call` hook denies its calls from the press on, and its next `turn.complete` counts as stopped ([agent-row-click-and-stop](../decisions/agent-row-click-and-stop.md)).
 
 **Re-check when:** the host gains an agent stop call, or `turn.abort` accepts a subagent's turn.

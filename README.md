@@ -99,14 +99,15 @@ The section is off by default. Costs are estimated from token counts and a price
 ### Subagents
 
 <p align="center">
-  <img src="media/agents.svg" alt="Subagents section, Active tab: a running Explore agent, an expanded general-purpose agent with its task, recent actions and files, and a running Explore agent nested under it" width="860">
+  <img src="media/agents.svg" alt="Subagents section, Active tab: a running Explore agent, an expanded general-purpose agent with its Stop and Highlight buttons, task, recent actions and files, and a running Explore agent nested under it" width="860">
 </p>
 
 - **Coverage:** Agent-tool subagents of any type, forks, teammates, background agents, workflow agents, and nested agents under their parent.
 - **Tabs:** *Active* and *Finished*. A finished parent stays in *Active* while one of its children is still running.
 - **Rows:** model, effort, steps so far, the agent's latest action, context fill, estimated cost and run time.
 - **Bar:** an agent that keeps a to-do list (`TodoWrite`, or `TaskCreate` and `TaskUpdate`) fills its bar for real, with the step under way beside it (`2/5 · Updating the callers`). agent-crew only reads those calls; it adds no tool and costs no tokens. Without a list the bar is an estimate from run time and model requests: it fills quickly at first, then ever more slowly, and stops short of 90 %. Steps reported through [savvy-progress](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress)'s `step` tool count too. Finished agents get a full bar: green when done, red when failed, grey when stopped.
-- **Details:** expanding a row shows the agent's task, its recent tool calls and messages, the files it read and changed, and its final answer. *Highlight its files* dims every other file in the tree.
+- **Details:** a click anywhere on a row expands it. A row of buttons comes first: *■ Stop* for a running agent, *Highlight its files*, which dims every other file in the tree, and *Copy answer*. Below them are the agent's task, its recent tool calls and messages, the files it read and changed, and its final answer.
+- **Stop:** *■ Stop* asks once, then ends the agent through Claude Code's own `TaskStop`. Where that can't reach it, agent-crew refuses the agent's further tool calls until it ends, and counts it as stopped.
 - **Notifications** when background or workflow agents finish, and whenever an agent fails or is stopped.
 - **Clear finished**, under the *Finished* tab, removes finished agents from the list. Their cost remains in the totals.
 

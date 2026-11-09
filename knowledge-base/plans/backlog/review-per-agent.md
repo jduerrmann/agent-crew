@@ -4,7 +4,7 @@ area: agents
 status: backlog
 priority:
 effort: L
-depends-on: agent-rows-and-stop
+depends-on: agent-row-click-and-stop
 created: 2026-10-11
 updated: 2026-10-11
 ---
