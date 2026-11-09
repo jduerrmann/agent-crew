@@ -241,9 +241,14 @@ test('media: panel.svg, every section of a busy session', { options: { showTotal
   emit('panel.svg', renderPane(await ui.drawn(), WIDTH))
 })
 
-test('media: usage.svg', { options: { ...ONLY, showUsage: true } }, async ($, on) => {
+test('media: usage.svg, the 5-hour limit filling before it resets', { options: { ...ONLY, showUsage: true } }, async ($, on) => {
   const w = world(on)
   await start($)
+  // Twenty minutes earlier the 5-hour limit stood at 68 %: at that pace it is full
+  // before it resets, and its meter says when.
+  const early = USAGE((await w.clock.now()) + 20 * MIN)
+  await $.session.measure({ context: early.context, rateLimits: early.rateLimits.map(l => (l.kind === 'five_hour' ? { ...l, percentUsed: 68 } : l)), changed: ['rateLimits'] } as never)
+  await w.clock.advance(20 * MIN)
   await measure($, w)
   const ui = await mount($)
   emit('usage.svg', await section(ui))

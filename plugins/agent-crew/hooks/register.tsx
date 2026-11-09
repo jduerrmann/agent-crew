@@ -6,6 +6,8 @@ import type { CrewFile, CrewGit, CrewGitFile, CrewKind, CrewLog, CrewMainTurn, C
 import { CLAY, FLIP_MS, FONT, crab, fitText, svg, textWidth, xml } from './crab'
 import type { FileRowSpec, FileRowsProps, Seg } from './filerows'
 import type { SearchBoxProps } from './searchbox'
+import { addSample, fillsBeforeReset, fullIn } from './forecast'
+import type { LimitHistory } from './forecast'
 import { applyNumstat, filesBeneath, folderKeys, folderOf, inside, isNewer, keyOf, mayChange, openCommand, parseStatus, posix, rawGithubUrl, readTargets, resolve, rowsUnder, treeRows, underFolder, useDrives, visibleRows } from './files'
 import type { TreeRow } from './files'
 import type { HotSeg, HotspotProps } from './hotspot'
@@ -47,6 +49,7 @@ const mainTurns = atom({ plugin: 'agent-crew', key: 'mainTurns' } as const, [])
 const tasks = atom({ plugin: 'agent-crew', key: 'tasks' } as const, [])
 const mainReport = atom({ plugin: 'agent-crew', key: 'mainReport' } as const, null)
 const stopping = atom({ plugin: 'agent-crew', key: 'stopping' } as const, {})
+const usageHistory = atom({ plugin: 'agent-crew', key: 'usageHistory' } as const, {})
 
 // The plugin's options, set by register on every (re)load.
 let opts: Record<string, unknown> = {}
@@ -142,6 +145,9 @@ const STRINGS = {
     stopDeny: 'Von agent-crew gestoppt: keine weiteren Tool-Aufrufe. Beende jetzt mit einer kurzen Antwort.',
     limitWarn: (label: string, pct: number, reset: string) => `${label}-Limit bei ${pct} %${reset ? ` (${reset})` : ''}`,
     contextWarn: (pct: number) => `Kontext zu ${pct} % voll: /compact schafft Platz`,
+    fullIn: (span: string) => `voll in ~${span}`,
+    paceWarn: (label: string, span: string, reset: string) => `${label}-Limit ist bei diesem Tempo in ~${span} voll${reset ? ` (${reset})` : ''}`,
+    costWarn: (name: string, cost: string, limit: string) => `${name} hat ≈${cost} verbraucht, mehr als deine Grenze von ${limit}`,
     timeline: 'Zeitleiste',
     focusOn: 'Seine Dateien hervorheben',
     focusOff: 'Hervorhebung aufheben',
@@ -232,6 +238,9 @@ const STRINGS = {
     stopDeny: 'Stopped from agent-crew: no more tool calls. End now with a short answer.',
     limitWarn: (label: string, pct: number, reset: string) => `${label} limit at ${pct} %${reset ? ` (${reset})` : ''}`,
     contextWarn: (pct: number) => `Context ${pct} % full: /compact makes room`,
+    fullIn: (span: string) => `full in ~${span}`,
+    paceWarn: (label: string, span: string, reset: string) => `${label} limit full in ~${span} at this pace${reset ? ` (${reset})` : ''}`,
+    costWarn: (name: string, cost: string, limit: string) => `${name} has used ≈${cost}, more than your limit of ${limit}`,
     timeline: 'Timeline',
     focusOn: 'Highlight its files',
     focusOff: 'Clear highlight',
@@ -1108,6 +1117,73 @@ async function storeUsage(
     limits: limits.map(l => ({ kind: l.kind, percent: l.percentUsed, resetsAt: l.resetsAt })),
   }
   if (JSON.stringify(await read($, usage)) !== JSON.stringify(next)) await update($, usage, () => next)
+  // Each limit's reading joins its history, from which the forecast reads the pace.
+  if (!limits.length) return
+  const at = await $.clock.now()
+  await update($, usageHistory, prev => {
+    const all = { ...(prev ?? {}) }
+    for (const l of limits) all[l.kind] = addSample(all[l.kind], l.percentUsed, l.resetsAt, at)
+    return all
+  })
+}
+
+// A meter's forecast: when its limit fills at the current pace, where that comes
+// before the limit resets and the `limitForecast` option keeps it.
+const withForecast = (meters: Meter[], hist: Record<string, LimitHistory>, at: number): Meter[] =>
+  opts.limitForecast === false
+    ? meters
+    : meters.map(m => {
+        const ms = m.key === 'context' ? undefined : fullIn(hist[m.key], at)
+        return ms !== undefined && fillsBeforeReset(ms, m.resetsAt, at) ? { ...m, fullIn: ms } : m
+      })
+
+/** Under an hour to a full limit: the forecast turns amber. */
+const PACE_ALERT_MS = 3_600_000
+/** Under half an hour: a notice, once per window. */
+const PACE_NOTICE_MS = 30 * 60_000
+
+// The `agentCostLimit` option in dollars; 0 when off.
+const costLimit = (): number => {
+  const n = Number(opts.agentCostLimit)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// Says once when an agent's estimated cost passes the `agentCostLimit` option.
+async function warnCost($: EngineInterface, agentId: string): Promise<void> {
+  const limit = costLimit()
+  if (!limit) return
+  let over: CrewRun | undefined
+  await update($, runs, l =>
+    l.map(r => {
+      if (r.agentId !== agentId || r.isOverCost || r.costUsd < limit) return r
+      over = r
+      return { ...r, isOverCost: true }
+    }),
+  )
+  const run = over as CrewRun | undefined
+  if (run) await notify($, tr().costWarn(run.description || typeLabel(run), fmtCost(run.costUsd), fmtCost(limit)))
+}
+
+// Says once per window when a limit will be full within half an hour at this pace.
+async function warnPace($: EngineInterface): Promise<void> {
+  const at = await $.clock.now()
+  const s = tr()
+  const meters = withForecast(metersOf(await read($, usage)), await read($, usageHistory), at)
+  const due = meters.filter(m => m.fullIn !== undefined && m.fullIn < PACE_NOTICE_MS)
+  if (!due.length) return
+  const say: string[] = []
+  await update($, warned, prev => {
+    const next = { ...(prev ?? {}) }
+    for (const m of due) {
+      const key = `pace:${m.key}`
+      const windowId = (m.resetsAt ? Date.parse(m.resetsAt) : Number.NaN) || 1
+      if (next[key] === windowId) continue
+      next[key] = windowId
+      say.push(s.paceWarn(m.label, spanOf(m.fullIn ?? 0), m.resetsAt ? resetIn(m.resetsAt, at) : ''))
+    }
+    return next
+  })
+  for (const text of say) await notify($, text)
 }
 
 // The pane opens by itself once a session: on the first subagent (`autoOpen`),
@@ -1557,7 +1633,8 @@ const cardOf = (r: Pick<CrewRun, 'type' | 'kind'>, depth: number) => card(colorO
 
 // --- the usage section: the context window and the plan's rate-limit windows.
 
-type Meter = { key: string; label: string; percent: number; detail?: string; resetsAt?: string }
+/** `fullIn`: ms until the limit fills at the current pace, where that comes before it resets. */
+type Meter = { key: string; label: string; percent: number; detail?: string; resetsAt?: string; fullIn?: number }
 
 const metersOf = (u: CrewUsage): Meter[] => {
   const s = tr()
@@ -1581,15 +1658,19 @@ const meterOption = (key: string): string =>
 // Blue while there is room, amber from 80 %, red from 95 %.
 const meterColor = (percent: number): string => (percent >= 95 ? '#D0453F' : percent >= 80 ? '#BA7517' : '#378ADD')
 
-// The time until a reset, `1h 20m`; empty once it has passed or can't be read.
+// A span of time, `1h 20m`, `3d 4h` or `40m`.
+const spanOf = (ms: number): string => {
+  const h = Math.floor(ms / 3_600_000)
+  const m = Math.floor((ms % 3_600_000) / 60_000)
+  return h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : h ? `${h}h ${m}m` : `${m}m`
+}
+
+// The time until a reset; empty once it has passed or can't be read.
 const spanTo = (iso: string, at: number): string => {
   const when = Date.parse(iso)
   if (!Number.isFinite(when)) return ''
   const ms = when - at
-  if (ms <= 0) return ''
-  const h = Math.floor(ms / 3_600_000)
-  const m = Math.floor((ms % 3_600_000) / 60_000)
-  return h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : h ? `${h}h ${m}m` : `${m}m`
+  return ms <= 0 ? '' : spanOf(ms)
 }
 
 const resetIn = (iso: string, at: number): string => {
@@ -1765,15 +1846,22 @@ const usageSvg = (W: number, meters: Meter[], at: number, cols = usageColumns(W,
       const dy = Math.floor(n / cols) * USAGE_H
       const x = i * itemW + RING_R + 3
       const filled = (c * m.percent) / 100
-      const sub = [m.detail, m.resetsAt ? resetIn(m.resetsAt, at) : ''].filter(Boolean).join(' · ')
+      // The second line: the forecast first, amber within the hour, then the
+      // detail and the reset; cut as one line, the forecast's part kept coloured.
+      const pace = m.fullIn !== undefined ? tr().fullIn(spanOf(m.fullIn)) : ''
+      const sub = [pace, m.detail, m.resetsAt ? resetIn(m.resetsAt, at) : ''].filter(Boolean).join(' · ')
       const textW = itemW - RING_R * 2 - 16
       const labelW = textW - textWidth(`${m.percent}% `, 12.5)
       const cy = 16 + dy
+      const fitted = fitText(sub, 10.5, textW)
+      const head = fitted.slice(0, pace.length)
+      const subText =
+        pace && (m.fullIn ?? Infinity) < PACE_ALERT_MS ? `<tspan fill="#BA7517" font-weight="600">${xml(head)}</tspan>${xml(fitted.slice(head.length))}` : xml(fitted)
       return (
         `<circle cx="${x}" cy="${cy}" r="${RING_R}" fill="none" stroke="#9a9a96" stroke-opacity=".3" stroke-width="3"/>` +
         `<circle cx="${x}" cy="${cy}" r="${RING_R}" fill="none" stroke="${meterColor(m.percent)}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${filled} ${c}" transform="rotate(-90 ${x} ${cy})"/>` +
         `<text x="${x + RING_R + 8}" y="${20 + dy}" font-family="${FONT}" font-size="12.5"><tspan class="t" font-weight="600">${m.percent}%</tspan><tspan class="s"> ${xml(fitText(m.label, 12.5, labelW))}</tspan></text>` +
-        (sub ? `<text class="m" x="${x + RING_R + 8}" y="${36 + dy}" font-family="${FONT}" font-size="10.5">${xml(fitText(sub, 10.5, textW))}</text>` : '')
+        (sub ? `<text class="m" x="${x + RING_R + 8}" y="${36 + dy}" font-family="${FONT}" font-size="10.5">${subText}</text>` : '')
       )
     })
     .join('')
@@ -2125,6 +2213,7 @@ const FIELDS: readonly Field[] = [
   { key: 'usageContext', group: 'usage', default: true },
   { key: 'usageFiveHour', group: 'usage', default: true },
   { key: 'usageWeek', group: 'usage', default: true },
+  { key: 'limitForecast', group: 'usage', default: true },
   { key: 'bandAgents', group: 'band', default: true },
   { key: 'bandProgress', group: 'band', default: false },
   { key: 'bandUsage', group: 'band', default: false },
@@ -2136,6 +2225,7 @@ const FIELDS: readonly Field[] = [
   { key: 'notifyAgents', group: 'notify', default: 'background', choices: ['off', 'failures', 'background', 'all'] },
   { key: 'notifyVia', group: 'notify', default: 'toast', choices: ['toast', 'system'] },
   { key: 'limitWarnings', group: 'notify', default: true },
+  { key: 'agentCostLimit', group: 'notify', default: 'off', choices: ['off', '1', '2', '5', '10', '20'] },
   { key: 'warnConflicts', group: 'notify', default: true },
   { key: 'checkUpdates', group: 'notify', default: true },
 ]
@@ -2169,6 +2259,7 @@ const FIELD_TEXT = {
       usageContext: ['Kontext', 'Wie voll das Kontextfenster der Session ist'],
       usageFiveHour: ['5-Stunden-Limit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
       usageWeek: ['Wochenlimit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
+      limitForecast: ['Prognose', 'Wann ein Limit beim jetzigen Tempo voll ist, wenn das vor dem Zurücksetzen passiert; bei weniger als 30 Minuten eine Meldung'],
       bandAgents: ['Crew-Zeile', 'Laufende, fertige und fehlgeschlagene Subagenten und Konflikte, über dem Prompt'],
       bandProgress: ['Fortschritt', 'Jeder laufende Subagent mit seinem Balken, über dem Prompt'],
       bandUsage: ['Nutzung', 'Kontext und Limits mit der Zeit bis zum Zurücksetzen, über dem Prompt'],
@@ -2180,6 +2271,7 @@ const FIELD_TEXT = {
       notifyAgents: ['Agent fertig', 'Wann eine Meldung kommt, wenn ein Subagent endet'],
       notifyVia: ['Meldungen als', 'In Claude Code oder als Benachrichtigung von Terminal bzw. System'],
       limitWarnings: ['Limit-Warnungen', 'Bei 80 % und 95 % eines Limits, und bei 85 % Kontext'],
+      agentCostLimit: ['Kostengrenze pro Agent', 'Eine Meldung, wenn die geschätzten Kosten eines Subagenten diesen Betrag übersteigen'],
       warnConflicts: ['Konflikt-Warnung', 'Wenn zwei Agenten innerhalb von 10 Minuten dieselbe Datei ändern'],
       checkUpdates: ['Update-Hinweis', 'Einmal am Tag nachsehen, ob es eine neue Version von agent-crew gibt, und Bescheid geben'],
     } as Record<string, [string, string]>,
@@ -2188,6 +2280,7 @@ const FIELD_TEXT = {
       off: 'Aus', failures: 'Nur Fehler', background: 'Hintergrund', all: 'Alle',
       toast: 'In Claude Code', system: 'System',
       smooth: 'Flüssig', light: 'Sparsam',
+      '1': '$1', '2': '$2', '5': '$5', '10': '$10', '20': '$20',
     } as Record<string, string>,
   },
   en: {
@@ -2218,6 +2311,7 @@ const FIELD_TEXT = {
       usageContext: ['Context', 'How full the session’s context window is'],
       usageFiveHour: ['5-hour limit', 'Use so far and time until it resets'],
       usageWeek: ['Weekly limit', 'Use so far and time until it resets'],
+      limitForecast: ['Forecast', 'When a limit fills at the current pace, where that comes before it resets; a notice under 30 minutes'],
       bandAgents: ['Crew line', 'Running, finished and failed subagents and conflicts, above the prompt'],
       bandProgress: ['Progress', 'Each running subagent with its bar, above the prompt'],
       bandUsage: ['Usage', 'Context and limits with the time until they reset, above the prompt'],
@@ -2229,6 +2323,7 @@ const FIELD_TEXT = {
       notifyAgents: ['Agent finished', 'When a notice comes as a subagent ends'],
       notifyVia: ['Notices as', 'Inside Claude Code, or as the terminal’s or system’s notification'],
       limitWarnings: ['Limit warnings', 'At 80 % and 95 % of a limit, and at 85 % context'],
+      agentCostLimit: ['Cost limit per agent', 'A notice when a subagent’s estimated cost passes this amount'],
       warnConflicts: ['Conflict warning', 'When two agents change the same file within 10 minutes'],
       checkUpdates: ['Update notice', 'Look once a day for a new version of agent-crew, and say so'],
     } as Record<string, [string, string]>,
@@ -2237,6 +2332,7 @@ const FIELD_TEXT = {
       off: 'Off', failures: 'Failures only', background: 'Background', all: 'All',
       toast: 'In Claude Code', system: 'System',
       smooth: 'Smooth', light: 'Light',
+      '1': '$1', '2': '$2', '5': '$5', '10': '$10', '20': '$20',
     } as Record<string, string>,
   },
 } as const
@@ -2730,6 +2826,7 @@ export const register: Register = (on, options) => {
       ),
     )
     if (wasIdle) await refreshStatus($)
+    await warnCost($, agentId)
     return result
   })
 
@@ -2791,7 +2888,12 @@ export const register: Register = (on, options) => {
   // The engine pushes context and rate-limit figures after each main-thread turn.
   on('session.measure', async ($, e, next) => {
     await storeUsage($, e.context, e.rateLimits)
-    if (opts.limitWarnings !== false) void warnLimits($).catch(() => undefined)
+    // One after the other: both write the `warned` levels.
+    if (opts.limitWarnings !== false)
+      void (async () => {
+        await warnLimits($)
+        if (opts.limitForecast !== false) await warnPace($)
+      })().catch(() => undefined)
     return next(e)
   })
 
@@ -2936,7 +3038,11 @@ export const register: Register = (on, options) => {
       const showFiles = opts.showFiles !== false
       // Drawn again when a setting changes in the settings pane.
       await read($, settingsRev)
-      const meters = metersOf(await read($, usage)).filter(m => opts[meterOption(m.key)] !== false)
+      const meters = withForecast(
+        metersOf(await read($, usage)).filter(m => opts[meterOption(m.key)] !== false),
+        await read($, usageHistory),
+        at,
+      )
       // A new version shows beside the settings, which install it.
       const up = await read($, updateInfo)
       const newVersion = opts.checkUpdates !== false && up?.latest && isNewer(up.latest, up.current) && up.phase !== 'done' ? up.latest : ''
@@ -3843,10 +3949,16 @@ export const register: Register = (on, options) => {
         const w = Math.max(6, Math.min(24, cols - 30))
         const filled = Math.round((w * m.percent) / 100)
         const reset = m.resetsAt ? resetIn(m.resetsAt, at) : ''
+        const isPaceAlert = m.fullIn !== undefined && m.fullIn < PACE_ALERT_MS
         return (
           <Text key={`m-${m.key}`} wrap="truncate-end">
             <Text color={meterColor(m.percent)}>{'█'.repeat(filled)}</Text>
             <Text dimColor>{'░'.repeat(Math.max(0, w - filled))}</Text> <Text bold>{`${m.percent}%`.padStart(4)}</Text> {m.label}
+            {m.fullIn !== undefined && (
+              <Text color={isPaceAlert ? '#BA7517' : undefined} bold={isPaceAlert} dimColor={!isPaceAlert}>
+                {` · ${s.fullIn(spanOf(m.fullIn))}`}
+              </Text>
+            )}
             <Text dimColor>
               {m.detail ? ` · ${m.detail}` : ''}
               {reset ? ` · ${reset}` : ''}

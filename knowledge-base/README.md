@@ -72,6 +72,7 @@ Rules:
 - [prompt-band](decisions/prompt-band.md): band above the prompt: crabs and counts, bars, usage rings, each an option; click opens the pane; stacks over others (user)
 - [settings-tab](decisions/settings-tab.md): `/crew-settings` tab and ⚙ button, written through `$.config.set` like `/config`
 - [cost-is-an-estimate](decisions/cost-is-an-estimate.md): cost marked `≈` from `PRICES`; the cost section is off by default (user)
+- [limit-forecast](decisions/limit-forecast.md): a meter says when its limit fills at the last half hour's pace, if before reset; notice <30 min; agentCostLimit
 - [tokens-new-vs-cached](decisions/tokens-new-vs-cached.md): new = input + output + cache writes, cached reads apart; one sum was misleading
 - [crab-flip-book](decisions/crab-flip-book.md): desktop crabs walk as stills redrawn 4×/s while agents run; `crabMotion` light = 1×/s (user)
 - [agent-bar-estimate](decisions/agent-bar-estimate.md): row bar estimates from time and steps up to 90 %; savvy `step` reports fill it for real; green/red/grey at the end (user)
@@ -107,7 +108,6 @@ Rules:
 Read a plan, the notes it links and the code it points to before starting; check its pointers against the code first.
 
 ### Active, in order
-5. [burn-rate](plans/active/burn-rate.md): forecast when a limit runs out at the current pace; optional cost limit per agent (M)
 6. [file-lock](plans/active/file-lock.md): optional lock refuses a second agent's edit of a file another running agent is changing (M)
 
 ### Backlog

@@ -1,6 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import { textWidth } from '../hooks/crab'
 import { isNewer } from '../hooks/files'
+import { addSample, fillsBeforeReset, fullIn } from '../hooks/forecast'
+import type { LimitHistory } from '../hooks/forecast'
 import { applyTask, holderOf, reportOf, tasksReport, todoReport } from '../hooks/progress'
 import { MAX_REMOUNTS, baseKey, remounts } from '../hooks/remount'
 import type { Engine } from 'claude-code/testing'
@@ -20,7 +22,17 @@ type PaneState = { id: string; isShown: boolean; isPlaced: boolean }
 // `panes`: the panes open at the start. They change as the host's would: opening
 // a new id shows and places it, opening an open id only retitles it (it stays
 // where it was, behind or unplaced), closing removes it.
-function engine(on: On, listed: AgentInfo[] = [], run?: (argv: string[]) => RunAnswer | undefined, panes: PaneState[] = []) {
+// `startLimits`: the plan limits the engine reports at the start.
+function engine(
+  on: On,
+  listed: AgentInfo[] = [],
+  run?: (argv: string[]) => RunAnswer | undefined,
+  panes: PaneState[] = [],
+  startLimits: { kind: string; percentUsed: number }[] = [
+    { kind: 'five_hour', percentUsed: 6 },
+    { kind: 'seven_day', percentUsed: 7 },
+  ],
+) {
   const clock = mock.clock(on)
   mock.env(on, { LANG: 'de_DE.UTF-8' })
   const opened: string[] = []
@@ -30,7 +42,7 @@ function engine(on: On, listed: AgentInfo[] = [], run?: (argv: string[]) => RunA
   let n = 0
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/work' }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { percent: 31, tokens: 62000, window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 6 }, { kind: 'seven_day', percentUsed: 7 }] } }) as never)
+  on('session.usage', () => ({ value: { startedAt: 0, context: { percent: 31, tokens: 62000, window: 200000 }, rateLimits: startLimits } }) as never)
   const runs: string[][] = []
   on('process.run', (_$, e) => {
     const argv = [...(e as { argv: string[] }).argv]
@@ -583,6 +595,105 @@ test('limits warn once when they pass 80 %, and the context at 85 %', async ($, 
   await $.session.measure(measure as never)
   expect(toasts.filter(t => t.includes('5 Std.-Limit bei 82 %')).length).toBe(1)
   expect(toasts.filter(t => t.includes('Kontext zu 90 %')).length).toBe(1)
+})
+
+test('the forecast reads the pace of the last half hour from a limit’s readings', () => {
+  const MIN = 60_000
+  const add = (h: LimitHistory | undefined, at: number, pct: number, reset = 'R') => addSample(h, pct, reset === 'R' ? '2026-11-09T18:00:00.000Z' : reset, at)
+  // 50 % to 70 % over twenty minutes: the other 30 % take thirty more.
+  let h = add(add(add(undefined, 0, 50), 10 * MIN, 60), 20 * MIN, 70)
+  expect(Math.round((fullIn(h, 20 * MIN) ?? 0) / MIN)).toBe(30)
+  // Time passes from the newest reading on.
+  expect(Math.round((fullIn(h, 25 * MIN) ?? 0) / MIN)).toBe(25)
+  // One reading, or two too close together, give no pace.
+  expect(fullIn(add(undefined, 0, 50), 0)).toBeUndefined()
+  expect(fullIn(add(add(undefined, 0, 50), MIN, 51), MIN)).toBeUndefined()
+  // A pace that doesn't rise gives none.
+  expect(fullIn(add(add(undefined, 0, 50), 10 * MIN, 50), 10 * MIN)).toBeUndefined()
+  // Stale: the newest reading is more than half an hour old.
+  expect(fullIn(h, 60 * MIN)).toBeUndefined()
+  // A new window, or a percentage that fell, starts over.
+  expect(add(h, 30 * MIN, 72, '2026-11-09T23:00:00.000Z').samples.length).toBe(1)
+  expect(add(h, 30 * MIN, 3).samples.length).toBe(1)
+  // The newest reading floats until it lies a minute past the one before it.
+  h = add(add(add(undefined, 0, 50), 20_000, 51), 40_000, 52)
+  expect(h.samples).toEqual([
+    [0, 50],
+    [40_000, 52],
+  ])
+  h = add(add(h, 70_000, 53), 80_000, 54)
+  expect(h.samples.map(s => s[0])).toEqual([0, 70_000, 80_000])
+  // Only a fill before the reset is worth showing.
+  expect(fillsBeforeReset(30 * MIN, new Date(60 * MIN).toISOString(), 0)).toBe(true)
+  expect(fillsBeforeReset(90 * MIN, new Date(60 * MIN).toISOString(), 0)).toBe(false)
+  expect(fillsBeforeReset(90 * MIN, undefined, 0)).toBe(true)
+})
+
+// The engine with no limits at the start, so only `paceOf`'s readings count.
+const paceEngine = (on: On) => engine(on, [], undefined, [], [])
+
+// The 5-hour limit read at `pcts`, ten minutes apart; it resets `resetMin` minutes after the start.
+async function paceOf($: Engine, clock: { now: () => number; advance: (ms: number) => Promise<unknown> }, pcts: number[], resetMin: number) {
+  const resetsAt = new Date(clock.now() + resetMin * 60_000).toISOString()
+  for (const [i, pct] of pcts.entries()) {
+    if (i) await clock.advance(10 * 60_000)
+    await $.session.measure({ context: { percent: 31, tokens: 62000, window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: pct, resetsAt }], changed: ['rateLimits'] } as never)
+  }
+}
+
+test('a limit filling before it resets says when, under its meter on both surfaces', async ($, on) => {
+  const { clock, toasts } = paceEngine(on)
+  await start($)
+  await paceOf($, clock, [30, 40, 50], 180)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(JSON.stringify(await ui.drawn())).toContain('voll in ~50m')
+    await ui.unmount()
+  }
+  // Fifty minutes is no reason for a notice yet.
+  expect(toasts.some(t => t.includes('Tempo'))).toBe(false)
+})
+
+test('a limit that resets before it fills shows no forecast', async ($, on) => {
+  const { clock } = paceEngine(on)
+  await start($)
+  await paceOf($, clock, [30, 40, 50], 40)
+  const ui = await mount($, 'terminal')
+  expect(JSON.stringify(await ui.drawn())).not.toContain('voll in')
+})
+
+test('under half an hour to a full limit, a notice comes once per window', async ($, on) => {
+  const { clock, toasts } = paceEngine(on)
+  await start($)
+  await paceOf($, clock, [40, 60, 80, 82], 180)
+  expect(toasts.filter(t => t.includes('5 Std.-Limit ist bei diesem Tempo in ~')).length).toBe(1)
+  // Amber in the picture, within the hour.
+  const ui = await mount($, 'desktop')
+  expect(JSON.stringify(await ui.drawn())).toMatch(/fill=\\"#BA7517\\" font-weight=\\"600\\">voll in ~/)
+})
+
+test('limitForecast off shows and says nothing of the pace', { options: { limitForecast: false } }, async ($, on) => {
+  const { clock, toasts } = paceEngine(on)
+  await start($)
+  await paceOf($, clock, [40, 60, 80], 180)
+  expect(toasts.some(t => t.includes('Tempo'))).toBe(false)
+  const ui = await mount($, 'terminal')
+  expect(JSON.stringify(await ui.drawn())).not.toContain('voll in')
+})
+
+test('agentCostLimit: an agent past it raises one notice', { options: { agentCostLimit: '1' } }, async ($, on) => {
+  const { toasts } = engine(on)
+  const tokens = modelSteps(on)
+  await start($)
+  await spawn($, 'Teurer Umbau', 'general-purpose')
+  // $0.80 a request at Opus 5.5's $4 per million input tokens.
+  tokens.n = 200_000
+  await step($, 'a1')
+  expect(toasts.some(t => t.includes('Grenze'))).toBe(false)
+  await step($, 'a1')
+  await step($, 'a1')
+  expect(toasts.filter(t => t.includes('Grenze')).length).toBe(1)
+  expect(toasts.find(t => t.includes('Grenze'))).toBe('Teurer Umbau hat ≈$1.60 verbraucht, mehr als deine Grenze von $1.00')
 })
 
 test('the timeline shows under the agents, and the option hides it', async ($, on) => {
@@ -1342,11 +1453,11 @@ async function step($: Engine, agentId: string) {
   return s.result
 }
 
-// The terminal's bar of an agent row: one text of twenty cells, in eighths
-// (the usage meters split theirs in two).
 // Whether the pane shows a text: as a Text, or in a click region's segments, where
 // a terminal agent row draws its lines.
 const shows = async (ui: Mounted, re: RegExp) => (await ui.find({ text: re })) !== undefined || re.test(JSON.stringify(await ui.drawn()))
+// The terminal's bar of an agent row: one text of twenty cells, in eighths
+// (the usage meters split theirs in two).
 const barText = async (ui: Mounted) => /"([░█▏▎▍▌▋▊▉]{20})"/.exec(JSON.stringify(await ui.drawn()))?.[1] ?? ''
 // How full it is, in eighths of a cell.
 const eighthsOf = (bar: string) => [...bar].reduce((n, c) => n + (c === '█' ? 8 : Math.max(0, '▏▎▍▌▋▊▉'.indexOf(c) + 1)), 0)

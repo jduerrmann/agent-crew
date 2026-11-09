@@ -68,6 +68,12 @@
       "description": "Show the weekly limits in the usage section",
       "default": true
     },
+    "limitForecast": {
+      "type": "boolean",
+      "title": "Usage: forecast",
+      "description": "Under a limit, when it fills at the current pace, where that comes before it resets; with limit warnings on, a notice once it is under 30 minutes",
+      "default": true
+    },
     "bandAgents": {
       "type": "boolean",
       "title": "Above the prompt: crew line",
@@ -104,6 +110,13 @@
       "title": "Warn about limits",
       "description": "A notice when the 5-hour or weekly limit passes 80 % and 95 %, and when the context passes 85 %",
       "default": true
+    },
+    "agentCostLimit": {
+      "type": "string",
+      "title": "Cost limit per agent",
+      "description": "off, or a notice once when a subagent's estimated cost passes this many dollars",
+      "default": "off",
+      "options": ["off", "1", "2", "5", "10", "20"]
     },
     "checkUpdates": {
       "type": "boolean",

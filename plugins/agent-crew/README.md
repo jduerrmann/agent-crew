@@ -30,6 +30,7 @@ Reads come from `Read`, `Grep` results and shell readers (`cat`, `head`, `sed`, 
 | `usageContext` | `true` | Context meter |
 | `usageFiveHour` | `true` | 5-hour limit meter |
 | `usageWeek` | `true` | Weekly limit meters |
+| `limitForecast` | `true` | When a limit fills at the current pace, if before it resets; a notice under 30 minutes |
 | `bandAgents` | `true` | Above the prompt: running, finished and failed subagents and conflicts; a click opens the pane |
 | `bandProgress` | `false` | Above the prompt: each running subagent with its bar |
 | `bandUsage` | `false` | Above the prompt: context and limits, with the time until they reset, and a `/compact` button |
@@ -41,6 +42,7 @@ Reads come from `Read`, `Grep` results and shell readers (`cat`, `head`, `sed`, 
 | `notifyAgents` | `background` | `off`, `failures`, `background`, `all` |
 | `notifyVia` | `toast` | `toast`, or `system` for the terminal's or system's notification |
 | `limitWarnings` | `true` | Warnings at 80 % and 95 % of a limit and at 85 % context |
+| `agentCostLimit` | `off` | A notice once when a subagent's estimated cost passes 1, 2, 5, 10 or 20 dollars |
 | `warnConflicts` | `true` | Notice on conflicting edits |
 | `checkUpdates` | `true` | Daily check for a new version; the settings pane installs it |
 

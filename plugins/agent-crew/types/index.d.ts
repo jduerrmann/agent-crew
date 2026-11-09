@@ -35,6 +35,8 @@ export type CrewRun = {
   report?: CrewReport
   /** Its final answer, cut to a few thousand characters. */
   lastAnswer?: string
+  /** Its estimated cost passed the `agentCostLimit` option and a notice said so. */
+  isOverCost?: boolean
 }
 
 /** One entry of a subagent's activity log: a tool call, or text it wrote between calls. */
@@ -193,6 +195,8 @@ declare module 'claude-code' {
       mainReport: CrewReport | null
       /** Agents stopped from the pane that TaskStop could not end, and when: their tool calls are denied until their run ends. */
       stopping: Record<string, number>
+      /** Each plan limit's recent readings, by kind, for the forecast of when it fills (hooks/forecast.ts). */
+      usageHistory: Record<string, { window?: string; samples: [number, number][] }>
     }
   }
 }
