@@ -28,5 +28,6 @@ updated: 2026-11-09
 
 **Consequences:**
 - While only subagents work, readings arrive seldom and the forecast is rough or missing ([usage-arrives-late](../limits/usage-arrives-late.md)); the README says so, and the text says "~".
+- The weekly limit rarely gets a forecast, `forecastAlways` or not: it seldom rises three points within the hour or two the history covers. A longer history for it (a reading every ten minutes, twelve hours back) was offered; the user chose to leave it.
 - Readings without a reset time count as the same window, so a reset is caught by the falling percentage.
 - Tests that count on the pace start the mock engine without limits (`paceEngine`), since the start's own reading is a sample too.

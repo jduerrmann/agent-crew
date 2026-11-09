@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Claude_Code-mod-D97757" alt="Claude Code mod">
-  <img src="https://img.shields.io/badge/version-0.8.2-378ADD" alt="Version 0.8.2">
+  <img src="https://img.shields.io/badge/version-0.9.0-378ADD" alt="Version 0.9.0">
   <img src="https://img.shields.io/badge/license-PolyForm_Noncommercial-22c55e" alt="PolyForm Noncommercial license">
 </p>
 
