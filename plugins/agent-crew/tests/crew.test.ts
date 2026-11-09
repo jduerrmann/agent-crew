@@ -975,6 +975,17 @@ test('a folder shuts and opens on a press', async ($, on) => {
   }
 })
 
+test('on the desktop the search field leaves its last cell free, where its right border would be cut off', async ($, on) => {
+  engine(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  for (const [surface, gap] of [['desktop', 1], ['terminal', 0]] as const) {
+    const ui = await mount($, surface)
+    expect(await drawnPart(ui, 'search')).toContain(`"endGap":${gap}`)
+    await ui.unmount()
+  }
+})
+
 test('the search field loses its focus when the prompt or another button takes the keys', async ($, on) => {
   engine(on)
   on('prompt.edit', (_$, e) => ({ text: e.text, cursor: e.cursor }) as never)
@@ -1066,6 +1077,9 @@ test('the filters: activity by default, changes alone, or every file under the r
   await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
   const ui = await mount($, 'terminal')
   await expandAll(ui)
+  // Four short names, so they fit beside the heading.
+  const head = await drawnPart(ui, 'files-head')
+  for (const label of ['Aktiv', 'Geändert', 'Offen', 'Alle']) expect(head).toContain(`"label":"${label}"`)
   expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
   expect(await hasRow(ui, '/work/notes.md')).toBe(false)
   await ui.press({ key: 'files-filter-changed' })
@@ -1287,9 +1301,11 @@ test('a file just touched shows, shimmering, inside folders that are shut, and t
 })
 
 // A small git for the tests: HEAD, whether rev-parse and merge-base answer, a file list.
-function fakeGit(state: { head: string; isHeadDown?: boolean; isAncestor?: boolean; names?: string }) {
+function fakeGit(state: { head: string; isHeadDown?: boolean; isAncestor?: boolean; names?: string; show?: string; shown?: string[][]; log?: string }) {
   return (argv: string[]) => {
     const git = argv.slice(argv.indexOf('-C') + 2)
+    if (git[0] === 'log' && state.log !== undefined) return { exitCode: 0, stdout: state.log }
+    if (git[0] === 'show') return (state.shown?.push(git), { exitCode: 0, stdout: state.show ?? '' })
     if (git[0] === 'rev-parse' && git[1] === '--show-cdup') return { exitCode: 0, stdout: '\n' }
     if (git[0] === 'rev-parse') return state.isHeadDown ? { exitCode: 128, stdout: '', stderr: 'timeout' } : { exitCode: 0, stdout: state.head + '\n' }
     if (git[0] === 'status') return { exitCode: 0, stdout: '## main\u0000' }
@@ -1299,6 +1315,56 @@ function fakeGit(state: { head: string; isHeadDown?: boolean; isAncestor?: boole
     return { exitCode: 0, stdout: '' }
   }
 }
+
+test("a committed file's card shows its commit's changes, as a changed file's shows its own", async ($, on) => {
+  const shown: string[][] = []
+  const state = { head: 'a'.repeat(40), show: '@@ -1 +1 @@\n-old\n+new\n', shown }
+  const { clock } = engine(on, [], fakeGit(state), [{ id: 'agent-crew', isShown: true, isPlaced: true }])
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await clock.advance(1_000)
+  state.head = 'b'.repeat(40)
+  await clock.advance(11_000)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    await expandAll(ui)
+    // Opened once, the card stays open for the next surface.
+    if (!JSON.stringify(await ui.drawn()).includes('"key":"fd-')) await clickRow(ui, 'rows-a', 1)
+    await clock.advance(1_000)
+    const tab = JSON.stringify(await ui.find({ key: 'ftab-changes' }))
+    expect(tab).toContain('Commit bbbbbbb')
+    expect(await ui.find({ key: 'ftab-history' })).toBeDefined()
+    // That commit's own part, for this file alone.
+    expect(shown.at(-1)).toEqual(['show', '--no-color', '--format=', 'bbbbbbb', '--', 'src/app.ts'])
+    expect(JSON.stringify(await ui.drawn())).toContain('+new')
+    // Its history names the commit too.
+    await ui.press({ key: 'ftab-history' })
+    expect(await ui.find({ text: /committet bbbbbbb/ })).toBeDefined()
+    await ui.press({ key: 'ftab-changes' })
+    await ui.unmount()
+  }
+})
+
+test("a committed file's history and card name the commit git's log gives for it, not merely the newest HEAD", async ($, on) => {
+  const shown: string[][] = []
+  // Two commits came at once: ddddddd changed the file, bbbbbbb (HEAD) did not.
+  const state = { head: 'a'.repeat(40), show: '@@ -1 +1 @@\n-old\n+new\n', shown, log: 'ddddddd 1\naaaaaaa 0\n' }
+  const { clock } = engine(on, [], fakeGit(state), [{ id: 'agent-crew', isShown: true, isPlaced: true }])
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/app.ts' } as never)
+  await clock.advance(1_000)
+  state.head = 'b'.repeat(40)
+  await clock.advance(11_000)
+  const ui = await mount($, 'terminal')
+  await expandAll(ui)
+  await clickRow(ui, 'rows-a', 1)
+  await clock.advance(1_000)
+  expect(JSON.stringify(await ui.find({ key: 'ftab-changes' }))).toContain('Commit ddddddd')
+  expect(shown.at(-1)).toEqual(['show', '--no-color', '--format=', 'ddddddd', '--', 'src/app.ts'])
+  await ui.press({ key: 'ftab-history' })
+  expect(await ui.find({ text: /committet ddddddd/ })).toBeDefined()
+  expect(await ui.find({ text: /committet bbbbbbb/ })).toBeUndefined()
+})
 
 test('a failed rev-parse does not book the whole repository as committed', async ($, on) => {
   const state = { head: 'a'.repeat(40), isHeadDown: false }
@@ -1438,6 +1504,41 @@ test("Activity holds what the agents read and changed, Changes what git reports,
   expect(await hasRow(ui, '/work/src/notes.ts')).toBe(false)
   expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
   expect(await hasRow(ui, '/work/src/elsewhere.ts')).toBe(true)
+})
+
+test('Uncommitted holds what git reports as changed now, not the session’s commits', async ($, on) => {
+  const state = { head: 'a'.repeat(40), names: 'src/done.ts\u0000', status: '## main\u0000' }
+  const git = fakeGit(state)
+  const { clock } = engine(on, [], argv => (argv.includes('status') ? { exitCode: 0, stdout: state.status } : git(argv)))
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/work/src/notes.ts' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/done.ts', old_string: 'a', new_string: 'b' } as never)
+  await clock.advance(10_000)
+  // done.ts is committed; then app.ts is changed by an agent, elsewhere.ts in another editor.
+  state.head = 'b'.repeat(40)
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m x' } as never)
+  await clock.advance(10_000)
+  state.status = '## main\u0000 M src/app.ts\u0000 M src/elsewhere.ts\u0000'
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/app.ts', old_string: 'a', new_string: 'b' } as never)
+  await clock.advance(10_000)
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'files-filter-changed' })
+  await expandAll(ui)
+  expect(await hasRow(ui, '/work/src/done.ts')).toBe(true)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  await ui.press({ key: 'files-filter-uncommitted' })
+  await expandAll(ui)
+  expect(await hasRow(ui, '/work/src/done.ts')).toBe(false)
+  expect(await hasRow(ui, '/work/src/notes.ts')).toBe(false)
+  expect(await hasRow(ui, '/work/src/app.ts')).toBe(true)
+  expect(await hasRow(ui, '/work/src/elsewhere.ts')).toBe(true)
+  // All committed: the filter says so.
+  state.head = 'c'.repeat(40)
+  state.names = 'src/app.ts\u0000src/elsewhere.ts\u0000'
+  state.status = '## main\u0000'
+  await $.tool.call({ tool: 'Bash', command: 'git commit -am y' } as never)
+  await clock.advance(10_000)
+  expect(await ui.find({ text: /Nichts offen: alles committet\./ })).toBeDefined()
 })
 
 test('a new file, untracked or staged as added, shows as a blue +, in its row, its folder and the legend', async ($, on) => {

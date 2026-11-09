@@ -8,7 +8,8 @@ import type { ClientModule } from 'claude-code'
 // hooks module's to say (`isFocused`): it clears that when the person types in
 // the prompt or presses anything else in the pane.
 
-export type SearchBoxProps = { value: string; placeholder: string; hits: string; line: string; accent: string; isFocused: boolean }
+/** `endGap`: cells left free at the right end; the desktop can cut a Client's last cell off. */
+export type SearchBoxProps = { value: string; placeholder: string; hits: string; line: string; accent: string; isFocused: boolean; endGap?: number }
 // `posted`: the values sent and not yet seen back. Keys typed faster than a round
 // trip make the plugin's props trail the field; an older one coming back is an
 // echo, not a change, and must not wind the text back and lose a key.
@@ -56,7 +57,7 @@ const SearchBox: ClientModule<SearchBoxProps, Local> = (props, surface) => {
 
   const tail = state.text ? `${props.hits}  ×` : ''
   return (
-    <Box borderStyle="round" borderColor={props.isFocused ? props.accent : props.line} paddingX={1} flexDirection="row">
+    <Box borderStyle="round" borderColor={props.isFocused ? props.accent : props.line} paddingX={1} marginRight={props.endGap ?? 0} flexDirection="row">
       <Box flexGrow={1} flexShrink={1} overflow="hidden">
         {state.text ? (
           <Text wrap="truncate-start">

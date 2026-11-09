@@ -28,6 +28,7 @@ Rules:
 - [client-tree-bounds](limits/client-tree-bounds.md): a Client's tree: 20,000 nodes, 32 deep, 100,000 chars, or it unmounts; file rows split 20 a Client
 - [client-fault-sticks](limits/client-fault-sticks.md): a Client that missed its render shows the host's error until reload; `ui.fault` gives its key a new generation
 - [redraw-drops-button-clicks](limits/redraw-drops-button-clicks.md): a redraw between press and release loses a Button click; rows and tabs are hotspot.tsx Clients
+- [client-last-cell-cut](limits/client-last-cell-cut.md): a full-width Client's last cell can be cut off on the desktop; the search field leaves one free (`endGap`)
 - [client-region-over-picture](limits/client-region-over-picture.md): a click region over a picture counts code-font rows, not pixels; it doesn't grow with it, one region a row
 - [svg-redraw-restarts-animation](limits/svg-redraw-restarts-animation.md): desktop reloads every Svg per redraw; dots pulse in Clients, crabs walk as a 4/s flip book, bar glides 1 s
 
@@ -87,7 +88,7 @@ Rules:
 ### Files
 - [client-file-rows](decisions/client-file-rows.md): file rows as a Client like filetree: clickable while shimmering, double click opens
 - [own-search-field](decisions/own-search-field.md): full-width search as a Client; Input always shows a submit button
-- [files-tree-navigation](decisions/files-tree-navigation.md): folders shut but sum up (✎3 ◉1 ●●), new files blue +, Activity (agents) / Changes (git) / All, breadcrumbs, card with history and diff
+- [files-tree-navigation](decisions/files-tree-navigation.md): folders shut but sum up (✎3 ◉1 ●●), new files blue +, Activity / Changed / Pending / All (short names), breadcrumbs, card with history and diff
 - [conflict-window](decisions/conflict-window.md): two writers on one file within 10 minutes is a conflict until a commit
 - [git-read-schedule](decisions/git-read-schedule.md): git read 500 ms after changes, on opening, every 10 s while open; no ↻ (user); single-flight
 

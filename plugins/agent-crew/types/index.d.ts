@@ -67,8 +67,8 @@ export type CrewPanel = {
   expanded: string[]
   isCompact: boolean
   hasAutoOpened: boolean
-  /** What the file tree shows: what the session's agents read and changed, the changes alone, or every file. */
-  fileFilter: 'activity' | 'changed' | 'all'
+  /** What the file tree shows: what the session's agents read and changed, the changes and the session's commits, the changes not yet committed, or every file. */
+  fileFilter: 'activity' | 'changed' | 'uncommitted' | 'all'
   isFilesCollapsed: boolean
   /** The file whose history and diff are open. */
   openFile?: string
@@ -136,6 +136,8 @@ export type CrewFileEvent = {
   at: number
   agent: string
   kind: 'read' | 'write' | 'commit'
+  /** A commit's short hash; absent on entries kept before it was stored. */
+  commit?: string
 }
 
 export type CrewGitFile = {
@@ -174,7 +176,13 @@ declare module 'claude-code' {
       now: number
       usage: CrewUsage
       /** The diff of the open file, as git printed it (or its text when untracked). */
-      diff: { key: string; text: string; format: 'diff' | 'source' } | null
+      diff: {
+        key: string
+        text: string
+        format: 'diff' | 'source'
+        /** The open file's commits, newest first, short hash and time in ms, for its history's commit entries. */
+        commits?: [string, number][]
+      } | null
       /** The highest level each usage meter was warned at (0, 80, 95). */
       warned: Record<string, number>
       /** Bumped on each change from the settings pane, so both panes draw again. */

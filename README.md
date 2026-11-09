@@ -148,13 +148,13 @@ A tree of every file the main chat or a subagent touched, plus every file git re
 - **Recent activity:** a file that was just read, changed or committed shimmers in its colour for a few seconds; its folders open while it does, and shut again afterwards unless you opened them.
 - **Search:** the search line narrows the tree to matching paths and opens the folders that hold them; Enter opens the first hit's details, × clears the line.
 - **Agents:** coloured dots show which agents touched a file (up to six). *Highlight its files* in an agent's details dims every other file; the `◎ agent ✕` chip in the header lifts it.
-- **Details:** clicking a file opens a card with its history (who read, changed or committed it, and when) and, when git sees changes, a second tab with its diff against `HEAD`, or its content if it is untracked.
+- **Details:** clicking a file opens a card with its history (who read, changed or committed it, and when, a commit with its hash) and, when git sees changes, a second tab with its diff against `HEAD`, or its content if it is untracked. A file committed in the session and unchanged since shows that commit's changes instead (*Commit 7d72a58*).
 - **Open:** double-clicking a file, or *Open* in its details, opens it in the app your system uses for that kind of file.
 - **Folders:** folders start collapsed; clicking one expands or collapses it. A collapsed folder sums up what is inside it, at any depth, in the legend's colours (`✎2 +1 ✗1 ◉3`), with conflicts and the agents' dots. Double-clicking a folder shows only that folder.
 - **Breadcrumbs:** under the search line, the main folder and the branch with how far it is ahead of or behind its upstream; once a folder is entered, the steps above it lead back up.
 - **Header:** `▾ Files · N` folds the section; ⊞ expands every folder in view (⊟ collapses them again). In a narrow pane the filters wrap to a second line. Git is read again after every change and every ten seconds while the pane is open.
 - **Conflicts:** when two agents change the same file within ten minutes, the file is marked and a notice appears. A commit resolves the mark.
-- **Filters:** *Activity* (the default) shows what the session's agents read, changed or committed. *Changes* shows everything git reports as changed, whoever made it, including changes made by shell commands, which can't be traced to a file. *All* shows every file under the root besides, untouched ones without a sign (git's own list, or outside a repository a walk of at most 300 folders; 4000 files at most either way).
+- **Filters:** *Activity* (the default) shows what the session's agents read, changed or committed. *Changed* shows everything git reports as changed, whoever made it, including changes made by shell commands, which can't be traced to a file, and the files committed in the session. *Pending* shows only what git reports as changed, new or deleted right now, nothing committed. *All* shows every file under the root besides, untouched ones without a sign (git's own list, or outside a repository a walk of at most 300 folders; 4000 files at most either way).
 
 ### Above the prompt
 

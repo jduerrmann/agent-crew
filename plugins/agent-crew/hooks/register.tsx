@@ -114,8 +114,10 @@ const STRINGS = {
     nothingYet: 'Noch keine Aktion aufgezeichnet.',
     touched: (r: number, w: number) => `Dateien: ${r} gelesen, ${w} geändert`,
     files: 'Dateien',
-    fileFilters: { activity: 'Aktivität', changed: 'Änderungen', all: 'Alle' },
+    // Short, so the four buttons fit beside the files' heading.
+    fileFilters: { activity: 'Aktiv', changed: 'Geändert', uncommitted: 'Offen', all: 'Alle' },
     noFiles: 'Noch keine Dateien gelesen oder geändert.',
+    noUncommitted: 'Nichts offen: alles committet.',
     legend: { read: 'gelesen', write: 'geändert', isNew: 'neu', commit: 'committet', delete: 'gelöscht' },
     more: (n: number) => `… ${n} weitere`,
     main: 'Hauptchat',
@@ -161,6 +163,7 @@ const STRINGS = {
     openFailed: (name: string) => `${name} ließ sich nicht öffnen`,
     histKind: { read: 'gelesen', write: 'geändert', commit: 'committet' },
     changes: 'Änderungen',
+    commitTab: 'Commit',
     newFile: 'Neue Datei',
     noDiff: 'Kein Unterschied zu HEAD.',
     isNew: 'neu',
@@ -207,8 +210,9 @@ const STRINGS = {
     nothingYet: 'No action recorded yet.',
     touched: (r: number, w: number) => `Files: ${r} read, ${w} changed`,
     files: 'Files',
-    fileFilters: { activity: 'Activity', changed: 'Changes', all: 'All' },
+    fileFilters: { activity: 'Activity', changed: 'Changed', uncommitted: 'Pending', all: 'All' },
     noFiles: 'No files read or changed yet.',
+    noUncommitted: 'Nothing open: all committed.',
     legend: { read: 'read', write: 'changed', isNew: 'new', commit: 'committed', delete: 'deleted' },
     more: (n: number) => `… ${n} more`,
     main: 'main chat',
@@ -254,6 +258,7 @@ const STRINGS = {
     openFailed: (name: string) => `Could not open ${name}`,
     histKind: { read: 'read', write: 'changed', commit: 'committed' },
     changes: 'Changes',
+    commitTab: 'Commit',
     newFile: 'New file',
     noDiff: 'No difference to HEAD.',
     isNew: 'new',
@@ -806,9 +811,16 @@ async function loadDiff($: EngineInterface, key: string): Promise<void> {
   if (!path) return
   let text = ''
   let format: 'diff' | 'source' = 'diff'
+  const rel = g ? path.slice(g.root.length).replace(/^\//, '') : ''
+  // A file committed in the session: git's own list of its commits names each
+  // commit in its history, entries kept before the hash was stored too, and a
+  // commit that came with others names the one that touched this file.
+  const commits = g?.head && f?.commit ? commitsOf(await runGit($, g.root, ['log', '-n', String(MAX_HISTORY * 2), '--format=%h %ct', '--', rel])) : []
   if (g && gf && !gf.code.includes('?')) {
-    const rel = path.slice(g.root.length).replace(/^\//, '')
     text = (await runGit($, g.root, g.head ? ['diff', 'HEAD', '--no-color', '--', rel] : ['diff', '--no-color', '--', rel])) ?? ''
+  } else if (g && !gf && f?.commit) {
+    // Nothing changed since: the file's last commit, its own part.
+    text = (await runGit($, g.root, ['show', '--no-color', '--format=', commits[0]?.[0] ?? f.commit, '--', rel])) ?? ''
   } else if (gf?.code.includes('?')) {
     // An untracked file shows as source: read only one of a sensible size, and
     // never a binary one, as this runs on every sync while the card is open.
@@ -826,11 +838,24 @@ async function loadDiff($: EngineInterface, key: string): Promise<void> {
     const hunk = text.indexOf('\n@@')
     if (hunk >= 0) text = text.slice(hunk + 1)
   }
-  const next = text ? { key, text: text.slice(0, MAX_DIFF), format } : null
+  const next = text || commits.length ? { key, text: text.slice(0, MAX_DIFF), format, ...(commits.length ? { commits } : {}) } : null
   // Another file opened while git answered: this diff is no longer the card's.
   if ((await readPanel($)).openFile !== key) return
   if (JSON.stringify(await read($, diff)) !== JSON.stringify(next)) await update($, diff, () => next)
 }
+
+// `git log --format='%h %ct'`: short hash and commit time in ms, newest first.
+const commitsOf = (out: string | null): [string, number][] =>
+  (out ?? '').split('\n').flatMap((line): [string, number][] => {
+    const [hash, secs] = line.trim().split(' ')
+    const t = Number(secs)
+    return hash && Number.isFinite(t) && t > 0 ? [[hash, t * 1000]] : []
+  })
+
+// The hash a commit entry of a file's history stands for: the file's newest
+// commit made before the entry was noted, else the hash the entry stored.
+const commitOfEntry = (ev: { at: number; kind: string; commit?: string }, commits: readonly [string, number][] | undefined): string | undefined =>
+  ev.kind !== 'commit' ? undefined : (commits?.find(([, t]) => t <= ev.at + 1000)?.[0] ?? ev.commit)
 
 const runGit = async ($: EngineInterface, cwd: string, args: string[]): Promise<string | null> => {
   try {
@@ -910,7 +935,7 @@ async function syncGit($: EngineInterface): Promise<void> {
             const i = index.get(key) ?? -1
             if (i < 0 && room-- <= 0) continue
             const old: CrewFile = out[i] ?? { key, path, reads: 0, writes: 0, lastAt: at, lastKind: 'commit', agents: [] }
-            const history = [...(old.history ?? []), { at, agent: 'git', kind: 'commit' as const }].slice(-MAX_HISTORY)
+            const history = [...(old.history ?? []), { at, agent: 'git', kind: 'commit' as const, commit: sha }].slice(-MAX_HISTORY)
             const f: CrewFile = { ...old, lastAt: at, lastKind: 'commit', commit: sha, commitAt: at, history, conflict: undefined, recentWrites: undefined }
             if (i < 0) index.set(key, out.push(f) - 1)
             else out[i] = f
@@ -1928,8 +1953,9 @@ const badgeColor = (v: FileView): string => (isDeleted(v) ? DELETE_COLOR : isNew
 
 // The tree's files by its filter: `activity`, what the session's agents read,
 // changed and committed, however it stands in git now; `changed`, what git
-// reports as changed, by whomever, and the session's commits; `all`, every file
-// under the root besides, untouched ones without a sign.
+// reports as changed, by whomever, and the session's commits; `uncommitted`,
+// what git reports as changed alone; `all`, every file under the root besides,
+// untouched ones without a sign.
 const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: CrewPanel['fileFilter'], everyPath: readonly string[] = []): FileView[] => {
   const map = new Map<string, FileView>()
   const label = (path: string) => shortPath(path, base)
@@ -1949,6 +1975,9 @@ const fileViews = (list: CrewFile[], g: CrewGit | null, base: string, filter: Cr
   }
   const out = [...map.values()]
   if (filter === 'changed') return out.filter(v => isChanged(v, Boolean(g)))
+  // What git reports as changed, new or deleted now, whoever did it; outside a
+  // repository, as `changed` has it, what was written.
+  if (filter === 'uncommitted') return out.filter(v => (g ? Boolean(v.gitFile) : Boolean(v.file && v.file.writes > 0)))
   // Git's changes no agent touched (another editor, a Bash command) are left to `changed`.
   return filter === 'activity' ? out.filter(v => v.file) : out
 }
@@ -3323,7 +3352,7 @@ export const register: Register = (on, options) => {
             onPress={() => setPanel($, q => ({ isFilesCollapsed: !q.isFilesCollapsed }))}
           />
           <Text dimColor>│</Text>
-          {(['activity', 'changed', 'all'] as const).map(id => (
+          {(['activity', 'changed', 'uncommitted', 'all'] as const).map(id => (
             <Button
               key={`files-filter-${id}`}
               label={s.fileFilters[id]}
@@ -3403,7 +3432,7 @@ export const register: Register = (on, options) => {
               key={ck('search')}
               module="./searchbox.tsx"
               width="100%"
-              props={{ value: p.fileQuery ?? '', placeholder: s.search, hits: query ? s.hits(views.length) : '', line: '#6b6b68', accent: CLAY, isFocused: p.isSearchFocused === true } satisfies SearchBoxProps}
+              props={{ value: p.fileQuery ?? '', placeholder: s.search, hits: query ? s.hits(views.length) : '', line: '#6b6b68', accent: CLAY, isFocused: p.isSearchFocused === true, endGap: isDesktop ? 1 : 0 } satisfies SearchBoxProps}
             />
           ) : SearchInput ? (
             <Box key="files-search" flexDirection="row" alignItems="center" gap={1}>
@@ -3441,20 +3470,26 @@ export const register: Register = (on, options) => {
       const fileTree = visibleRows(treeAll, shut)
       const viewByKey = new Map(views.map(v => [v.key, v]))
       const openDiff = await read($, diff)
-      // An open file's card: its history and its changes against HEAD (the text
-      // of a new file) in two tabs, with Open beside them; a file git sees no
-      // change in has its history alone, no tabs and no heading. The tab chosen stays for the
-      // next file; absent a choice, the changes.
+      // An open file's card: its history and its changes in two tabs, with Open
+      // beside them. The changes are those against HEAD (the text of a new file),
+      // else, for a file committed in the session and unchanged since, that
+      // commit's own. A file with neither has its history alone, no tabs and no
+      // heading. The tab chosen stays for the next file; absent a choice, the changes.
       const fileDetails = (v: FileView, pad: string) => {
         const hist = [...(v.file?.history ?? [])].reverse()
-        const d = openDiff && openDiff.key === v.key ? openDiff : null
+        const loaded = openDiff && openDiff.key === v.key ? openDiff : null
+        // Its changes, where there is text; its commits either way.
+        const d = loaded?.text ? loaded : null
         const Code = 'Code' in ui ? ui.Code : undefined
-        const hasChanges = Boolean(d || v.gitFile)
+        const commit = v.gitFile ? undefined : (loaded?.commits?.[0]?.[0] ?? v.file?.commit)
+        const hasChanges = Boolean(d || v.gitFile || commit)
         const tab = !hasChanges || p.fileTab === 'history' ? 'history' : 'changes'
         const badge = gitBadge(v)
         const tabs = [
           { id: 'history' as const, label: s.history, count: hist.length ? String(hist.length) : '' },
-          ...(hasChanges ? [{ id: 'changes' as const, label: d?.format === 'source' ? s.newFile : s.changes, count: badge }] : []),
+          ...(hasChanges
+            ? [commit ? { id: 'changes' as const, label: s.commitTab, count: commit } : { id: 'changes' as const, label: d?.format === 'source' ? s.newFile : s.changes, count: badge }]
+            : []),
         ]
         return (
           <Box key={`fd-${v.key}`} flexDirection="column" marginTop={1}>
@@ -3487,7 +3522,9 @@ export const register: Register = (on, options) => {
                   <Text key={`h-${v.key}-${i}`} wrap="truncate-end">
                     {pad}
                     <Text dimColor>{fmtAgo(at - ev.at).padStart(4)} </Text>
-                    <Text color={ev.kind === 'read' ? READ_COLOR : ev.kind === 'write' ? WRITE_COLOR : COMMIT_COLOR}>{s.histKind[ev.kind]}</Text>
+                    <Text color={ev.kind === 'read' ? READ_COLOR : ev.kind === 'write' ? WRITE_COLOR : COMMIT_COLOR}>
+                      {[s.histKind[ev.kind], commitOfEntry(ev, loaded?.commits)].filter(Boolean).join(' ')}
+                    </Text>
                     <Text dimColor> · </Text>
                     <Text color={agentColor(ev.agent, byAgent)}>
                       {ev.agent === 'main' ? s.main : ev.agent === 'git' ? 'git' : byAgent.get(ev.agent)?.description || ev.agent.slice(0, 8)}
@@ -3622,7 +3659,7 @@ export const register: Register = (on, options) => {
         ) : null
       const filesBody = (
         <Box key="files-body" flexDirection="column">
-          {!p.isFilesCollapsed && views.length === 0 && <Text dimColor>{query ? s.noHits : s.noFiles}</Text>}
+          {!p.isFilesCollapsed && views.length === 0 && <Text dimColor>{query ? s.noHits : p.fileFilter === 'uncommitted' ? s.noUncommitted : s.noFiles}</Text>}
           {!p.isFilesCollapsed && rowsOf('rows-a', above)}
           {!p.isFilesCollapsed && openCard}
           {!p.isFilesCollapsed && rowsOf('rows-b', below)}
