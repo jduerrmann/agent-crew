@@ -31,6 +31,7 @@ Reads come from `Read`, `Grep` results and shell readers (`cat`, `head`, `sed`, 
 | `usageFiveHour` | `true` | 5-hour limit meter |
 | `usageWeek` | `true` | Weekly limit meters |
 | `limitForecast` | `true` | When a limit fills at the current pace, if before it resets; a notice under 30 minutes |
+| `forecastAlways` | `false` | The forecast also when the limit would fill only after it resets, dimmed, no notice |
 | `bandAgents` | `true` | Above the prompt: running, finished and failed subagents and conflicts; a click opens the pane |
 | `bandProgress` | `false` | Above the prompt: each running subagent with its bar |
 | `bandUsage` | `false` | Above the prompt: context and limits, with the time until they reset, and a `/compact` button |

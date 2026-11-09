@@ -74,6 +74,12 @@
       "description": "Under a limit, when it fills at the current pace, where that comes before it resets; with limit warnings on, a notice once it is under 30 minutes",
       "default": true
     },
+    "forecastAlways": {
+      "type": "boolean",
+      "title": "Usage: always show the forecast",
+      "description": "Show the forecast also when the limit would fill only after it resets, dimmed and without a notice",
+      "default": false
+    },
     "bandAgents": {
       "type": "boolean",
       "title": "Above the prompt: crew line",

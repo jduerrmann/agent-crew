@@ -600,14 +600,23 @@ test('limits warn once when they pass 80 %, and the context at 85 %', async ($, 
 test('the forecast reads the pace of the last half hour from a limit’s readings', () => {
   const MIN = 60_000
   const add = (h: LimitHistory | undefined, at: number, pct: number, reset = 'R') => addSample(h, pct, reset === 'R' ? '2026-11-09T18:00:00.000Z' : reset, at)
-  // 50 % to 70 % over twenty minutes: the other 30 % take thirty more.
+  // 50 % to 70 % over twenty minutes, a point taken off for rounding: the other
+  // 30 % take 30 / 19 × 20 ≈ 32 minutes more.
   let h = add(add(add(undefined, 0, 50), 10 * MIN, 60), 20 * MIN, 70)
-  expect(Math.round((fullIn(h, 20 * MIN) ?? 0) / MIN)).toBe(30)
+  expect(Math.round((fullIn(h, 20 * MIN) ?? 0) / MIN)).toBe(32)
   // Time passes from the newest reading on.
-  expect(Math.round((fullIn(h, 25 * MIN) ?? 0) / MIN)).toBe(25)
+  expect(Math.round((fullIn(h, 25 * MIN) ?? 0) / MIN)).toBe(27)
   // One reading, or two too close together, give no pace.
   expect(fullIn(add(undefined, 0, 50), 0)).toBeUndefined()
-  expect(fullIn(add(add(undefined, 0, 50), MIN, 51), MIN)).toBeUndefined()
+  expect(fullIn(add(add(undefined, 0, 50), MIN, 55), MIN)).toBeUndefined()
+  // A step of a point or two may be rounding alone: a weekly limit ticking from
+  // 25 to 26 % within minutes is no pace (it once said "full in ~3h 46m").
+  expect(fullIn(add(add(undefined, 0, 25), 5 * MIN, 26), 5 * MIN)).toBeUndefined()
+  expect(fullIn(add(add(add(undefined, 0, 24), 60 * MIN, 25), 90 * MIN, 26), 90 * MIN)).toBeUndefined()
+  // A slow limit is read over a longer stretch: the last half hour rose a point,
+  // the last ninety minutes three, so (3 − 1) points in 90 minutes.
+  const slow = add(add(add(add(undefined, 0, 80), 40 * MIN, 81), 60 * MIN, 82), 90 * MIN, 83)
+  expect(Math.round((fullIn(slow, 90 * MIN) ?? 0) / MIN)).toBe(765)
   // A pace that doesn't rise gives none.
   expect(fullIn(add(add(undefined, 0, 50), 10 * MIN, 50), 10 * MIN)).toBeUndefined()
   // Stale: the newest reading is more than half an hour old.
@@ -647,10 +656,10 @@ test('a limit filling before it resets says when, under its meter on both surfac
   await paceOf($, clock, [30, 40, 50], 180)
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    expect(JSON.stringify(await ui.drawn())).toContain('voll in ~50m')
+    expect(JSON.stringify(await ui.drawn())).toContain('voll in ~52m')
     await ui.unmount()
   }
-  // Fifty minutes is no reason for a notice yet.
+  // Fifty-odd minutes are no reason for a notice yet.
   expect(toasts.some(t => t.includes('Tempo'))).toBe(false)
 })
 
@@ -670,6 +679,23 @@ test('under half an hour to a full limit, a notice comes once per window', async
   // Amber in the picture, within the hour.
   const ui = await mount($, 'desktop')
   expect(JSON.stringify(await ui.drawn())).toMatch(/fill=\\"#BA7517\\" font-weight=\\"600\\">voll in ~/)
+})
+
+test('forecastAlways shows a fill after the reset too, dimmed and without a notice', { options: { forecastAlways: true } }, async ($, on) => {
+  const { clock, toasts } = paceEngine(on)
+  await start($)
+  // Full in about ten minutes, but it resets in five: no amber, no notice.
+  await paceOf($, clock, [40, 60, 80], 25)
+  expect(toasts.some(t => t.includes('Tempo'))).toBe(false)
+  const term = await mount($, 'terminal')
+  const drawn = JSON.stringify(await term.drawn())
+  // The forecast's own text is dimmed; the bar at 80 % is amber either way.
+  expect(drawn).toMatch(/"dimColor":true\},"children":\[" · voll in ~10m"\]/)
+  await term.unmount()
+  const desk = await mount($, 'desktop')
+  const picture = JSON.stringify(await desk.drawn())
+  expect(picture).toContain('voll in ~10m')
+  expect(picture).not.toMatch(/fill=\\"#BA7517\\" font-weight=\\"600\\">voll/)
 })
 
 test('limitForecast off shows and says nothing of the pace', { options: { limitForecast: false } }, async ($, on) => {

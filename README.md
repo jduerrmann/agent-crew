@@ -74,12 +74,12 @@ Then run `/crew`. By default the pane also opens by itself, once a session, when
 ### Usage
 
 <p align="center">
-  <img src="media/usage.svg" alt="Usage section: rings for 51 % context, 83 % of the 5-hour limit in amber with full in ~22m in amber beneath, and 10 % of the week, each with its reset time, and a /compact button" width="860">
+  <img src="media/usage.svg" alt="Usage section: rings for 51 % context, 83 % of the 5-hour limit in amber with full in ~24m in amber beneath, and 10 % of the week, each with its reset time, and a /compact button" width="860">
 </p>
 
 - **Context:** how full the session's context window is, in percent and tokens.
 - **5-hour and weekly limit:** your plan's limits, each with the time until it resets.
-- **Forecast:** when a limit will be full at the pace of about the last half hour, if that comes before it resets (`full in ~40m`). It turns amber under an hour, and a notice comes once it is under 30 minutes. Claude Code reports the limits only after the main chat's turns, so while only subagents work the forecast is rough.
+- **Forecast:** when a limit will be full at the pace of about the last half hour, if that comes before it resets (`full in ~40m`). It turns amber under an hour, and a notice comes once it is under 30 minutes. With `forecastAlways` it also shows, dimmed, when the limit would fill only after it resets. Claude Code reports the limits only after the main chat's turns, so while only subagents work the forecast is rough.
 - **Thresholds:** rings turn amber from 80 % and red from 95 %. A notice appears when a limit passes 80 % and 95 %, and when the context passes 85 %.
 - **`/compact`:** compacts the conversation without leaving the pane.
 
@@ -174,7 +174,7 @@ A click on the band opens the pane. When a survey needs the band, the band steps
 ## Settings
 
 <p align="center">
-  <img src="media/settings.svg" alt="Settings pane: a Sections group with switches for Usage, Cost, Subagents, Timeline, Main chat in the timeline and Files, a Usage group with Context, 5-hour limit, Weekly limit and Forecast, and an Above the prompt group with Crew line, Progress, Usage and Status line" width="860">
+  <img src="media/settings.svg" alt="Settings pane: a Sections group with switches for Usage, Cost, Subagents, Timeline, Main chat in the timeline and Files, a Usage group with Context, 5-hour limit, Weekly limit, Forecast and Always show the forecast, and an Above the prompt group with Crew line, Progress, Usage and Status line" width="860">
 </p>
 
 Open the settings with `/crew-settings` or the *Settings* button at the top of the pane. They are grouped into *Sections*, *Usage*, *Above the prompt*, *General* and *Notifications*, followed by *Version*; every change applies immediately. The pane writes the same values as `/config`; they can also be set in `~/.claude/settings.json`:
@@ -195,6 +195,7 @@ Open the settings with `/crew-settings` or the *Settings* button at the top of t
 | `usageFiveHour` | `true` | 5-hour limit in the usage section. |
 | `usageWeek` | `true` | Weekly limits in the usage section. |
 | `limitForecast` | `true` | When a limit fills at the current pace, if before it resets; a notice under 30 minutes (with `limitWarnings`). |
+| `forecastAlways` | `false` | Show the forecast also when the limit would fill only after it resets, dimmed and without a notice. |
 | `bandAgents` | `true` | Above the prompt: running, finished and failed agents and conflicts. A click opens the pane. |
 | `bandProgress` | `false` | Above the prompt: each running agent with its bar. |
 | `bandUsage` | `false` | Above the prompt: context and limits, with the time until they reset. |

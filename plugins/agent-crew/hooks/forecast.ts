@@ -13,6 +13,14 @@ export const MAX_SAMPLES = 60
 export const PACE_MS = 30 * 60_000
 /** Two readings closer than this give no pace worth telling. */
 export const MIN_SPAN_MS = 3 * 60_000
+/**
+ * A rise of fewer points gives no pace: the engine's percentages can come as
+ * whole numbers, so a step of one or two may be rounding alone (a weekly limit
+ * ticking from 25 to 26 % within minutes once forecast it full in four hours).
+ */
+export const MIN_RISE = 3
+/** What rounding can add to a rise between two readings, taken off it. */
+const ROUNDING = 1
 /** A newest reading older than this no longer says how fast things go now. */
 export const STALE_MS = 30 * 60_000
 /** Readings closer together than this replace the newest instead of adding one. */
@@ -45,23 +53,23 @@ export function addSample(h: LimitHistory | undefined, percent: number, resetsAt
 
 /**
  * How long until the limit is full at the pace of about the last half hour, in
- * ms from `at`; undefined without a rising pace, with too few or stale readings,
- * or when it is full already. At least a minute.
+ * ms from `at`; undefined without a rise of `MIN_RISE` points in the history,
+ * with stale readings, or when it is full already. At least a minute.
  */
 export function fullIn(h: LimitHistory | undefined, at: number): number | undefined {
   const s = h?.samples ?? []
   const newest = s.at(-1)
   if (!newest || s.length < 2 || newest[1] >= 100 || at - newest[0] > STALE_MS) return undefined
-  const earlier = s.slice(0, -1)
   const ago = (x: [number, number]) => newest[0] - x[0]
-  // The oldest reading of the last half hour that lies far enough back, else the
-  // newest one before that half hour.
-  const anchor = earlier.find(x => ago(x) >= MIN_SPAN_MS && ago(x) <= PACE_MS) ?? earlier.filter(x => ago(x) > PACE_MS).at(-1)
+  // Readings far enough back and far enough below the newest, oldest first. The
+  // oldest of the last half hour, else, where that half hour rose too little, the
+  // newest before it: a slow limit is read over a longer stretch.
+  const usable = s.slice(0, -1).filter(x => ago(x) >= MIN_SPAN_MS && newest[1] - x[1] >= MIN_RISE)
+  const anchor = usable.find(x => ago(x) <= PACE_MS) ?? usable.at(-1)
   if (!anchor) return undefined
-  const span = ago(anchor)
-  const rise = newest[1] - anchor[1]
-  if (rise <= 0) return undefined
-  return Math.max(60_000, ((100 - newest[1]) / rise) * span - (at - newest[0]))
+  // Taken off the rise, rounding can only make the forecast later, never sooner.
+  const rise = newest[1] - anchor[1] - ROUNDING
+  return Math.max(60_000, ((100 - newest[1]) / rise) * ago(anchor) - (at - newest[0]))
 }
 
 /** Whether a limit full in `ms` fills before it resets: only then is the forecast worth showing. */

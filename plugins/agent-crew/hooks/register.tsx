@@ -1127,15 +1127,21 @@ async function storeUsage(
   })
 }
 
-// A meter's forecast: when its limit fills at the current pace, where that comes
-// before the limit resets and the `limitForecast` option keeps it.
+// A meter's forecast: when its limit fills at the current pace, where the
+// `limitForecast` option keeps it. Only where that comes before the limit
+// resets, unless `forecastAlways` shows it either way.
 const withForecast = (meters: Meter[], hist: Record<string, LimitHistory>, at: number): Meter[] =>
   opts.limitForecast === false
     ? meters
     : meters.map(m => {
         const ms = m.key === 'context' ? undefined : fullIn(hist[m.key], at)
-        return ms !== undefined && fillsBeforeReset(ms, m.resetsAt, at) ? { ...m, fullIn: ms } : m
+        if (ms === undefined) return m
+        const isBeforeReset = fillsBeforeReset(ms, m.resetsAt, at)
+        return isBeforeReset || opts.forecastAlways === true ? { ...m, fullIn: ms, isBeforeReset } : m
       })
+
+// Amber and bold: the limit fills within the hour, before it resets.
+const isPaceAlert = (m: Meter): boolean => m.fullIn !== undefined && m.isBeforeReset === true && m.fullIn < PACE_ALERT_MS
 
 /** Under an hour to a full limit: the forecast turns amber. */
 const PACE_ALERT_MS = 3_600_000
@@ -1169,7 +1175,7 @@ async function warnPace($: EngineInterface): Promise<void> {
   const at = await $.clock.now()
   const s = tr()
   const meters = withForecast(metersOf(await read($, usage)), await read($, usageHistory), at)
-  const due = meters.filter(m => m.fullIn !== undefined && m.fullIn < PACE_NOTICE_MS)
+  const due = meters.filter(m => m.fullIn !== undefined && m.isBeforeReset === true && m.fullIn < PACE_NOTICE_MS)
   if (!due.length) return
   const say: string[] = []
   await update($, warned, prev => {
@@ -1633,8 +1639,8 @@ const cardOf = (r: Pick<CrewRun, 'type' | 'kind'>, depth: number) => card(colorO
 
 // --- the usage section: the context window and the plan's rate-limit windows.
 
-/** `fullIn`: ms until the limit fills at the current pace, where that comes before it resets. */
-type Meter = { key: string; label: string; percent: number; detail?: string; resetsAt?: string; fullIn?: number }
+/** `fullIn`: ms until the limit fills at the current pace; `isBeforeReset`: that comes before it resets. */
+type Meter = { key: string; label: string; percent: number; detail?: string; resetsAt?: string; fullIn?: number; isBeforeReset?: boolean }
 
 const metersOf = (u: CrewUsage): Meter[] => {
   const s = tr()
@@ -1855,8 +1861,7 @@ const usageSvg = (W: number, meters: Meter[], at: number, cols = usageColumns(W,
       const cy = 16 + dy
       const fitted = fitText(sub, 10.5, textW)
       const head = fitted.slice(0, pace.length)
-      const subText =
-        pace && (m.fullIn ?? Infinity) < PACE_ALERT_MS ? `<tspan fill="#BA7517" font-weight="600">${xml(head)}</tspan>${xml(fitted.slice(head.length))}` : xml(fitted)
+      const subText = pace && isPaceAlert(m) ? `<tspan fill="#BA7517" font-weight="600">${xml(head)}</tspan>${xml(fitted.slice(head.length))}` : xml(fitted)
       return (
         `<circle cx="${x}" cy="${cy}" r="${RING_R}" fill="none" stroke="#9a9a96" stroke-opacity=".3" stroke-width="3"/>` +
         `<circle cx="${x}" cy="${cy}" r="${RING_R}" fill="none" stroke="${meterColor(m.percent)}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${filled} ${c}" transform="rotate(-90 ${x} ${cy})"/>` +
@@ -2214,6 +2219,7 @@ const FIELDS: readonly Field[] = [
   { key: 'usageFiveHour', group: 'usage', default: true },
   { key: 'usageWeek', group: 'usage', default: true },
   { key: 'limitForecast', group: 'usage', default: true },
+  { key: 'forecastAlways', group: 'usage', default: false },
   { key: 'bandAgents', group: 'band', default: true },
   { key: 'bandProgress', group: 'band', default: false },
   { key: 'bandUsage', group: 'band', default: false },
@@ -2260,6 +2266,7 @@ const FIELD_TEXT = {
       usageFiveHour: ['5-Stunden-Limit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
       usageWeek: ['Wochenlimit', 'Verbrauch und Zeit bis zum Zurücksetzen'],
       limitForecast: ['Prognose', 'Wann ein Limit beim jetzigen Tempo voll ist, wenn das vor dem Zurücksetzen passiert; bei weniger als 30 Minuten eine Meldung'],
+      forecastAlways: ['Prognose immer zeigen', 'Auch wenn das Limit erst nach dem Zurücksetzen voll würde, gedämpft und ohne Meldung'],
       bandAgents: ['Crew-Zeile', 'Laufende, fertige und fehlgeschlagene Subagenten und Konflikte, über dem Prompt'],
       bandProgress: ['Fortschritt', 'Jeder laufende Subagent mit seinem Balken, über dem Prompt'],
       bandUsage: ['Nutzung', 'Kontext und Limits mit der Zeit bis zum Zurücksetzen, über dem Prompt'],
@@ -2312,6 +2319,7 @@ const FIELD_TEXT = {
       usageFiveHour: ['5-hour limit', 'Use so far and time until it resets'],
       usageWeek: ['Weekly limit', 'Use so far and time until it resets'],
       limitForecast: ['Forecast', 'When a limit fills at the current pace, where that comes before it resets; a notice under 30 minutes'],
+      forecastAlways: ['Always show the forecast', 'Also when the limit would fill only after it resets, dimmed and without a notice'],
       bandAgents: ['Crew line', 'Running, finished and failed subagents and conflicts, above the prompt'],
       bandProgress: ['Progress', 'Each running subagent with its bar, above the prompt'],
       bandUsage: ['Usage', 'Context and limits with the time until they reset, above the prompt'],
@@ -3949,13 +3957,13 @@ export const register: Register = (on, options) => {
         const w = Math.max(6, Math.min(24, cols - 30))
         const filled = Math.round((w * m.percent) / 100)
         const reset = m.resetsAt ? resetIn(m.resetsAt, at) : ''
-        const isPaceAlert = m.fullIn !== undefined && m.fullIn < PACE_ALERT_MS
+        const isAlert = isPaceAlert(m)
         return (
           <Text key={`m-${m.key}`} wrap="truncate-end">
             <Text color={meterColor(m.percent)}>{'█'.repeat(filled)}</Text>
             <Text dimColor>{'░'.repeat(Math.max(0, w - filled))}</Text> <Text bold>{`${m.percent}%`.padStart(4)}</Text> {m.label}
             {m.fullIn !== undefined && (
-              <Text color={isPaceAlert ? '#BA7517' : undefined} bold={isPaceAlert} dimColor={!isPaceAlert}>
+              <Text color={isAlert ? '#BA7517' : undefined} bold={isAlert} dimColor={!isAlert}>
                 {` · ${s.fullIn(spanOf(m.fullIn))}`}
               </Text>
             )}
