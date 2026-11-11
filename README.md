@@ -213,7 +213,7 @@ Open the settings with `/crew-settings` or the *Settings* button at the top of t
 
 ### Updates
 
-A few seconds after a session starts, and at most once a day, agent-crew compares its version with the one published on GitHub; a check that fails is tried again within the hour. A new version is announced once, and shows as **↑ version** beside *Settings* at the top of the pane. The *Version* group of the settings checks on demand and, for a copy installed from the marketplace, updates it in place (`claude plugin marketplace update agent-crew`, then `claude plugin update agent-crew@agent-crew`) and reloads the plugins. For a copy loaded from a folder of its own, such as a working copy, it only points out that `git pull` in that folder brings the new version. `checkUpdates` turns the daily check off; the button still works.
+A few seconds after a session starts, and at most once a day, agent-crew compares its version with the one published on GitHub; a check that fails is tried again within the hour. A new version is announced once, and shows as **↑ version** beside *Settings* at the top of the pane. The *Version* group of the settings checks on demand and, for a copy installed from the marketplace, updates it in place (`claude plugin marketplace update agent-crew`, then `claude plugin update agent-crew@agent-crew`) and reloads the plugins. It runs these with the Claude Code the desktop app brings along, or the `claude` command line; if neither starts, it shows the two commands to run in a terminal. For a copy loaded from a folder of its own, such as a working copy, it only points out that `git pull` in that folder brings the new version. `checkUpdates` turns the daily check off; the button still works.
 
 ## How it works
 

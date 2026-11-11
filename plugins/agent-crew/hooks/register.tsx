@@ -14,6 +14,8 @@ import type { HotSeg, HotspotProps } from './hotspot'
 import { applyTask, holderOf, isTodoTool, taskIdOf, tasksReport, todoReport } from './progress'
 import { baseKey, remounts } from './remount'
 import type { Tab, TabsProps } from './tabs'
+import { UPDATE_BY_HAND, bundledClaude, installUpdate as installWith, launchers } from './update'
+import type { List, Run } from './update'
 
 // One pane for the session's crew and what it touched. Above: every subagent,
 // however it started (the Agent tool, a fork, a teammate, a workflow script's
@@ -157,6 +159,7 @@ const STRINGS = {
     updateAvailable: (v: string) => `agent-crew ${v} ist verfügbar: /crew-settings zum Aktualisieren`,
     updateDone: (v: string) => `agent-crew ${v} installiert, die Plugins laden neu`,
     updateFailed: (why: string) => `Update fehlgeschlagen: ${why}`,
+    updateNoClaude: 'Claude Code ließ sich nicht starten',
     updateBadge: (v: string) => `↑ ${v}`,
     noHistory: 'Noch nichts aufgezeichnet.',
     openIt: 'Öffnen',
@@ -252,6 +255,7 @@ const STRINGS = {
     updateAvailable: (v: string) => `agent-crew ${v} is available: /crew-settings to update`,
     updateDone: (v: string) => `agent-crew ${v} installed, plugins reloading`,
     updateFailed: (why: string) => `Update failed: ${why}`,
+    updateNoClaude: 'Claude Code could not be started',
     updateBadge: (v: string) => `↑ ${v}`,
     noHistory: 'Nothing recorded yet.',
     openIt: 'Open',
@@ -1231,7 +1235,6 @@ async function autoOpenPane($: EngineInterface, cause: 'agents' | 'files'): Prom
 // --- updates: the published plugin.json on GitHub against this copy's own, at
 // most once a day; a notice once per new version; installed from the settings.
 
-const PLUGIN_ID = 'agent-crew@agent-crew'
 const CHECK_EVERY_MS = 24 * 3_600_000
 /** After a failed look (offline, an error, a page that is not a manifest), the next one comes sooner. */
 const RETRY_AFTER_MS = 30 * 60_000
@@ -1318,17 +1321,27 @@ async function runUpdate($: EngineInterface): Promise<void> {
   }
 }
 
+// The Claude Code to ask is found in hooks/update.ts: a bare `claude` starts
+// neither the desktop app's own nor, on Windows, the npm shim.
 async function installUpdate($: EngineInterface, cur: CrewUpdate): Promise<void> {
   await update($, updateInfo, (): CrewUpdate => ({ ...cur, phase: 'updating', error: undefined }))
-  const run = async (argv: string[]) => {
+  const run: Run = async (argv, timeoutMs) => {
+    const r = await $.process.run(argv, { timeoutMs })
+    return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr }
+  }
+  const list: List = async dir => (await $.fs.list(dir)).map(e => ({ name: e.name, kind: e.kind }))
+  let bundled: string[] = []
+  if (fold) {
     try {
-      const r = await $.process.run(argv, { timeoutMs: 120_000 })
-      return r.exitCode === 0 ? '' : r.stderr.trim().split('\n')[0] || `exit ${r.exitCode}`
-    } catch (err) {
-      return err instanceof Error ? err.message : String(err)
+      const localAppData = posix((await $.env.get('LOCALAPPDATA')) || '')
+      const appData = posix((await $.env.get('APPDATA')) || '')
+      bundled = await bundledClaude(list, localAppData, appData, (await $.session.version()).version)
+    } catch {
+      // No desktop app, or its folders unreadable: the other ways remain.
     }
   }
-  const error = (await run(['claude', 'plugin', 'marketplace', 'update', 'agent-crew'])) || (await run(['claude', 'plugin', 'update', PLUGIN_ID]))
+  const result = await installWith(launchers(fold, home, bundled), run)
+  const error = result.isMissing ? tr().updateNoClaude : result.error
   if (error) {
     await update($, updateInfo, (): CrewUpdate => ({ ...cur, phase: 'failed', error }))
     $.ui.toast(tr().updateFailed(error))
@@ -2277,6 +2290,7 @@ const FIELD_TEXT = {
     updateTo: (v: string) => `Auf ${v} aktualisieren`,
     updating: 'Wird aktualisiert …',
     updated: 'Installiert, die Plugins laden neu.',
+    byHand: 'Im Terminal geht es so, danach eine neue Session starten:',
     fromFolder: (root: string) => `Aus einem Ordner geladen (${root}): dort mit git pull aktualisieren.`,
     on: 'An',
     off: 'Aus',
@@ -2330,6 +2344,7 @@ const FIELD_TEXT = {
     updateTo: (v: string) => `Update to ${v}`,
     updating: 'Updating …',
     updated: 'Installed, plugins reloading.',
+    byHand: 'In a terminal it goes like this; start a new session afterwards:',
     fromFolder: (root: string) => `Loaded from a folder (${root}): update it there with git pull.`,
     on: 'On',
     off: 'Off',
@@ -2737,6 +2752,14 @@ export const register: Register = (on, options) => {
           </Box>
         </Box>
         {up?.source === 'folder' && <Text dimColor wrap="wrap">{f.fromFolder(up.root)}</Text>}
+        {up?.source === 'marketplace' && up.phase === 'failed' ? (
+          <Box key="update-by-hand" flexDirection="column">
+            <Text dimColor wrap="wrap">{f.byHand}</Text>
+            {UPDATE_BY_HAND.map((command, i) => (
+              <Text key={`update-by-hand-${i}`}>{command}</Text>
+            ))}
+          </Box>
+        ) : null}
       </Box>
     )
 

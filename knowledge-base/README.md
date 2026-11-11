@@ -52,6 +52,7 @@ Rules:
 - [plugin-dirs-at-session-start](limits/plugin-dirs-at-session-start.md): `CLAUDE_CODE_PLUGIN_DIRS` is read at session start, hot reload needs the user's OK; id `agent-crew@inline`
 - [marketplace-install-is-snapshot](limits/marketplace-install-is-snapshot.md): a marketplace install is a cached copy, even from a local folder; it updates only on a new version
 - [folder-copy-no-self-update](limits/folder-copy-no-self-update.md): only cache installs can update themselves; a folder copy is told to `git pull`
+- [claude-not-startable-by-name](limits/claude-not-startable-by-name.md): no shell, desktop's claude.exe off PATH, npm shim `claude.cmd`; update tries desktop binary, PATH, ~/.local/bin, cmd
 - [pane-lost-after-reloads](limits/pane-lost-after-reloads.md): after many hot reloads a pane can stay "not drawn" though the mod loads; restart; hooks must be function literals
 
 ### Windows, git, shell
@@ -93,7 +94,7 @@ Rules:
 - [git-read-schedule](decisions/git-read-schedule.md): git read 500 ms after changes, on opening, every 10 s while open; no ↻ (user); single-flight
 
 ### Release and process
-- [update-check](decisions/update-check.md): daily check against GitHub `plugin.json`; marketplace installs update, folder copies get `git pull`
+- [update-check](decisions/update-check.md): daily check against GitHub `plugin.json`; marketplace installs update by button (kept, user), folder copies get `git pull`
 - [versioning-minor-and-patch](decisions/versioning-minor-and-patch.md): features bump the minor version, fixes the patch; plugin.json, marketplace.json, badge; user's OK (user)
 - [versioning](decisions/versioning.md): superseded; every user-visible release bumped the minor version
 - [load-from-working-copy](decisions/load-from-working-copy.md): the user runs the working copy via `CLAUDE_CODE_PLUGIN_DIRS`; no marketplace install
@@ -126,5 +127,5 @@ Read a plan, the notes it links and the code it points to before starting; check
 Never checked; check them before building on them, then turn the answer into a limit or a decision.
 
 - Does ■ (`TaskStop`) stop a foreground subagent? A background one stops by its agent id, with no dialog ([stopping-subagents](limits/stopping-subagents.md)).
-- Does the update button work end to end against a real `claude`? The tests mock the command.
+- Does the repaired update button install and reload end to end in the desktop app? The ways to start `claude` were tried by hand, the update itself only in tests ([claude-not-startable-by-name](limits/claude-not-startable-by-name.md)).
 - Do mods load in WSL sessions of the desktop app? filetree's README says no.
